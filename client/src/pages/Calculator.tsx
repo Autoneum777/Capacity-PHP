@@ -4600,9 +4600,10 @@ function AllocationModal({
     Promise.all([
       api.allocation
         .candidates(machineId, { year, maxLoad: 90, includeOverloadedAlternatives: true, ...allocScenarioParams })
-        .then((r) => r.candidates || []),
+        .then((r) => r.candidates || [])
+        .catch(() => []),
       api.machines.operations(machineId, { year, includeVolumeYears: true, ...allocScenarioParams }),
-      api.alternatives.list(machineId),
+      api.alternatives.list(machineId).catch(() => []),
       api.machines.get(machineId).catch(() => null),
     ])
       .then(([cands, ops, alts, srcM]) => {

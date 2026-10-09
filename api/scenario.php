@@ -191,6 +191,7 @@ function scenario_calculator_database(PDO $pdo, int $id): ?PDO
     foreach ([
         'machines', 'process_phases', 'part_designations', 'admin_settings', 'working_days',
         'machine_baseline_materials', 'machine_baseline_material_parts', 'machine_baseline_material_volumes',
+        'nest_machines', 'machine_alternatives',
     ] as $table) {
         scenario_copy_table($memory, $table, false);
     }
@@ -1119,24 +1120,43 @@ function scenario_execute_allocation(PDO $pdo, array $body): void
             'effective_from_week' => $item === $year ? $week : null,
         ];
     }
-    $moveId = 1;
-    foreach ($bundle['allocation_moves'] as $move) {
-        $moveId = max($moveId, (int) ($move['id'] ?? 0) + 1);
-    }
-    $bundle['allocation_moves'][] = [
-        'id' => $moveId,
-        'batchId' => (string) ($body['batchId'] ?? ('batch-' . $moveId)),
-        'at' => date('c'),
-        'steps' => [[
-            'sourceOperationId' => $operationId,
-            'childOperationId' => $childId,
-            'year' => $year,
-            'sourceMachineId' => (int) $operation['machine_id'],
-            'targetMachineId' => $targetId,
-            'partId' => (int) ($operation['part_id'] ?? 0),
-            'parentYearBefore' => $parentBefore,
-        ]],
+    $step = [
+        'sourceOperationId' => $operationId,
+        'childOperationId' => $childId,
+        'year' => $year,
+        'sourceMachineId' => (int) $operation['machine_id'],
+        'targetMachineId' => $targetId,
+        'partId' => (int) ($operation['part_id'] ?? 0),
+        'parentYearBefore' => $parentBefore,
     ];
+    $batchId = trim((string) ($body['batchId'] ?? ''));
+    $attached = false;
+    if ($batchId !== '') {
+        foreach ($bundle['allocation_moves'] as &$existingMove) {
+            if (trim((string) ($existingMove['batchId'] ?? '')) !== $batchId) {
+                continue;
+            }
+            $existingMove['steps'][] = $step;
+            $attached = true;
+            break;
+        }
+        unset($existingMove);
+    }
+    if (!$attached) {
+        $moveId = 1;
+        foreach ($bundle['allocation_moves'] as $move) {
+            $moveId = max($moveId, (int) ($move['id'] ?? 0) + 1);
+        }
+        if ($batchId === '') {
+            $batchId = 'batch-' . $moveId;
+        }
+        $bundle['allocation_moves'][] = [
+            'id' => $moveId,
+            'batchId' => $batchId,
+            'at' => date('c'),
+            'steps' => [$step],
+        ];
+    }
     $label = trim((string) $targetRow['internal_number']) !== '' ? (string) $targetRow['internal_number'] : '#' . $targetId;
     scenario_audit(
         $bundle,
@@ -1151,6 +1171,167 @@ function scenario_execute_allocation(PDO $pdo, array $body): void
     json_response(200, ['success' => true]);
 }
 
+function scenario_part_label(PDO $pdo, array $bundle, int $partId): string
+{
+    if ($partId <= 0) {
+        return '';
+    }
+    $part = null;
+    foreach ($bundle['parts'] as $row) {
+        if ((int) ($row['id'] ?? 0) === $partId) {
+            $part = $row;
+            break;
+        }
+    }
+    if ($part === null) {
+        return '';
+    }
+    $designation = null;
+    $designationId = (int) ($part['designation_id'] ?? 0);
+    if ($designationId > 0) {
+        foreach ($bundle['part_designations'] as $row) {
+            if ((int) ($row['id'] ?? 0) === $designationId) {
+                $designation = $row;
+                break;
+            }
+        }
+    }
+    return detail_label([
+        'sap_number' => $designation['sap_number'] ?? null,
+        'alias' => $designation['alias'] ?? null,
+        'free_text' => $designation['free_text'] ?? null,
+        'designation' => $part['designation'] ?? null,
+        'id' => $partId,
+    ], reference_mode($pdo));
+}
+
+function scenario_machine_label(PDO $pdo, int $machineId): string
+{
+    if ($machineId <= 0) {
+        return '';
+    }
+    $stmt = $pdo->prepare('SELECT sap_number, internal_number FROM machines WHERE id = ?');
+    $stmt->execute([$machineId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        return (string) $machineId;
+    }
+    $sap = trim((string) ($row['sap_number'] ?? ''));
+    $internal = trim((string) ($row['internal_number'] ?? ''));
+    if ($sap !== '' && $internal !== '') {
+        return $sap . ' (' . $internal . ')';
+    }
+    if ($internal !== '') {
+        return $internal;
+    }
+    if ($sap !== '') {
+        return $sap;
+    }
+    return (string) $machineId;
+}
+
+function scenario_endpoint_label(PDO $pdo, array $machineIds): string
+{
+    $labels = [];
+    foreach ($machineIds as $machineId) {
+        $machineId = (int) $machineId;
+        if ($machineId <= 0 || isset($labels[$machineId])) {
+            continue;
+        }
+        $labels[$machineId] = scenario_machine_label($pdo, $machineId);
+    }
+    return implode(', ', array_values($labels));
+}
+
+function scenario_move_batch_key(array $move): string
+{
+    $batch = trim((string) ($move['batchId'] ?? ''));
+    if ($batch !== '') {
+        return 'b:' . $batch;
+    }
+    return 'id:' . (int) ($move['id'] ?? 0);
+}
+
+/** Jedno kliknięcie (wspólne batchId) = jedna grupa, także gdy starszy zapis rozbił je na osobne wiersze. */
+function scenario_allocation_groups(array $moves): array
+{
+    $groups = [];
+    $order = [];
+    foreach ($moves as $index => $move) {
+        if (!is_array($move)) {
+            continue;
+        }
+        $key = scenario_move_batch_key($move);
+        if (!isset($groups[$key])) {
+            $groups[$key] = [
+                'indexes' => [],
+                'steps' => [],
+                'at' => (string) ($move['at'] ?? ''),
+                'id' => (int) ($move['id'] ?? 0),
+            ];
+            $order[] = $key;
+        }
+        $groups[$key]['indexes'][] = $index;
+        foreach ($move['steps'] ?? [] as $step) {
+            if (is_array($step)) {
+                $groups[$key]['steps'][] = $step;
+            }
+        }
+        $at = (string) ($move['at'] ?? '');
+        if (strcmp($at, $groups[$key]['at']) > 0) {
+            $groups[$key]['at'] = $at;
+        }
+        $groups[$key]['id'] = max($groups[$key]['id'], (int) ($move['id'] ?? 0));
+    }
+    $out = [];
+    foreach ($order as $key) {
+        $out[] = $groups[$key];
+    }
+    return $out;
+}
+
+function scenario_allocation_summary(PDO $pdo, array $bundle, array $group): array
+{
+    $years = [];
+    $partIds = [];
+    $sources = [];
+    $targets = [];
+    foreach ($group['steps'] as $step) {
+        $year = (int) ($step['year'] ?? 0);
+        if ($year > 0) {
+            $years[$year] = true;
+        }
+        $partId = (int) ($step['partId'] ?? 0);
+        if ($partId > 0) {
+            $partIds[$partId] = true;
+        }
+        $sources[] = (int) ($step['sourceMachineId'] ?? 0);
+        $targets[] = (int) ($step['targetMachineId'] ?? 0);
+    }
+    $partLabels = [];
+    foreach (array_keys($partIds) as $partId) {
+        $label = scenario_part_label($pdo, $bundle, $partId);
+        if ($label !== '') {
+            $partLabels[] = $label;
+        }
+    }
+    if (count($partLabels) <= 1) {
+        $partLabel = $partLabels[0] ?? '';
+    } elseif (count($partLabels) <= 3) {
+        $partLabel = implode(', ', $partLabels);
+    } else {
+        $partLabel = count($partLabels) . ' detali';
+    }
+    $yearList = array_keys($years);
+    sort($yearList);
+    return [
+        'partLabel' => $partLabel,
+        'sourceLabel' => scenario_endpoint_label($pdo, $sources),
+        'targetLabel' => scenario_endpoint_label($pdo, $targets),
+        'years' => $yearList,
+    ];
+}
+
 function scenario_moves(PDO $pdo, int $id): void
 {
     $auth = require_permission($pdo, 'scenarios.view');
@@ -1163,16 +1344,16 @@ function scenario_moves(PDO $pdo, int $id): void
     }
     $bundle = scenario_decode((string) $row['snapshot']);
     $items = [];
-    foreach ($bundle['allocation_moves'] as $move) {
-        $step = $move['steps'][0] ?? [];
+    foreach (scenario_allocation_groups($bundle['allocation_moves']) as $group) {
+        $summary = scenario_allocation_summary($pdo, $bundle, $group);
         $items[] = [
             'kind' => 'allocation',
-            'id' => (int) ($move['id'] ?? 0),
-            'at' => (string) ($move['at'] ?? ''),
-            'years' => array_map(fn(array $step): int => (int) ($step['year'] ?? 0), $move['steps'] ?? []),
-            'partLabel' => 'detal #' . (int) ($step['partId'] ?? 0),
-            'sourceLabel' => 'maszyna #' . (int) ($step['sourceMachineId'] ?? 0),
-            'targetLabel' => 'maszyna #' . (int) ($step['targetMachineId'] ?? 0),
+            'id' => (int) $group['id'],
+            'at' => (string) $group['at'],
+            'years' => $summary['years'],
+            'partLabel' => $summary['partLabel'],
+            'sourceLabel' => $summary['sourceLabel'],
+            'targetLabel' => $summary['targetLabel'],
             'canUndo' => false,
         ];
     }
@@ -1199,45 +1380,54 @@ function scenario_undo(PDO $pdo, int $id): void
 {
     $opened = scenario_require_editable($pdo, $id);
     $bundle = $opened['bundle'];
-    $latest = null;
-    $latestKind = '';
-    $latestIndex = -1;
-    foreach ($bundle['allocation_moves'] as $index => $move) {
-        if ($latest === null || strcmp((string) ($move['at'] ?? ''), (string) $latest['at']) > 0) {
-            $latest = $move;
-            $latestKind = 'allocation';
-            $latestIndex = $index;
+    $groups = scenario_allocation_groups($bundle['allocation_moves']);
+    $latestGroup = null;
+    foreach ($groups as $group) {
+        if ($latestGroup === null || strcmp((string) $group['at'], (string) $latestGroup['at']) > 0) {
+            $latestGroup = $group;
         }
     }
-    foreach ($bundle['volume_edits'] as $index => $edit) {
-        if ($latest === null || strcmp((string) ($edit['at'] ?? ''), (string) $latest['at']) > 0) {
-            $latest = $edit;
-            $latestKind = 'volume';
-            $latestIndex = $index;
+    $latestEdit = null;
+    foreach ($bundle['volume_edits'] as $edit) {
+        if ($latestEdit === null || strcmp((string) ($edit['at'] ?? ''), (string) ($latestEdit['at'] ?? '')) > 0) {
+            $latestEdit = $edit;
         }
     }
-    if ($latest === null) {
+    $allocationIsNewer = $latestGroup !== null && ($latestEdit === null || strcmp((string) $latestGroup['at'], (string) ($latestEdit['at'] ?? '')) >= 0);
+    if ($latestGroup === null && $latestEdit === null) {
         json_response(400, ['error' => 'Brak ruchu do cofnięcia.']);
     }
-    if ($latestKind === 'allocation') {
-        foreach ($latest['steps'] ?? [] as $step) {
-            $childId = (int) ($step['childOperationId'] ?? 0);
-            $parentId = (int) ($step['sourceOperationId'] ?? 0);
-            $year = (int) ($step['year'] ?? 0);
-            $bundle['operations'] = array_values(array_filter($bundle['operations'], fn(array $row): bool => (int) ($row['id'] ?? 0) !== $childId));
-            $bundle['operation_volume_by_year'] = array_values(array_filter(
-                $bundle['operation_volume_by_year'],
-                fn(array $row): bool => (int) ($row['operation_id'] ?? 0) !== $childId && !((int) ($row['operation_id'] ?? 0) === $parentId && (int) ($row['year'] ?? 0) === $year)
-            ));
-            if (is_array($step['parentYearBefore'] ?? null)) {
-                $bundle['operation_volume_by_year'][] = $step['parentYearBefore'];
-            }
-        }
-        array_splice($bundle['allocation_moves'], $latestIndex, 1);
-    } else {
+    if (!$allocationIsNewer) {
         json_response(400, ['error' => 'Cofnięcie zmiany wolumenu detalu będzie dostępne w kolejnym kroku.']);
     }
-    scenario_audit($bundle, user_login_label($opened['auth']['user']), 'Scenariusz: cofnięto ostatnią alokację.');
+    $steps = $latestGroup['steps'];
+    for ($i = count($steps) - 1; $i >= 0; $i--) {
+        $step = $steps[$i];
+        $childId = (int) ($step['childOperationId'] ?? 0);
+        $parentId = (int) ($step['sourceOperationId'] ?? 0);
+        $year = (int) ($step['year'] ?? 0);
+        $bundle['operations'] = array_values(array_filter($bundle['operations'], fn(array $row): bool => (int) ($row['id'] ?? 0) !== $childId));
+        $bundle['operation_volume_by_year'] = array_values(array_filter(
+            $bundle['operation_volume_by_year'],
+            fn(array $row): bool => (int) ($row['operation_id'] ?? 0) !== $childId && !((int) ($row['operation_id'] ?? 0) === $parentId && (int) ($row['year'] ?? 0) === $year)
+        ));
+        if (is_array($step['parentYearBefore'] ?? null)) {
+            $bundle['operation_volume_by_year'][] = $step['parentYearBefore'];
+        }
+    }
+    $indexes = $latestGroup['indexes'];
+    rsort($indexes);
+    foreach ($indexes as $index) {
+        array_splice($bundle['allocation_moves'], $index, 1);
+    }
+    $summary = scenario_allocation_summary($pdo, $bundle, $latestGroup);
+    $detail = $summary['partLabel'] !== '' ? $summary['partLabel'] : 'detalu';
+    $years = $summary['years'] !== [] ? implode(', ', $summary['years']) : '—';
+    scenario_audit(
+        $bundle,
+        user_login_label($opened['auth']['user']),
+        'Cofnięto alokację ' . $detail . ' z maszyny ' . ($summary['targetLabel'] !== '' ? $summary['targetLabel'] : '—') . ' z powrotem na maszynę ' . ($summary['sourceLabel'] !== '' ? $summary['sourceLabel'] : '—') . ', lata ' . $years . '.'
+    );
     scenario_save($pdo, $id, $bundle);
     json_response(200, ['ok' => true, 'label' => 'alokacja']);
 }
