@@ -1,0 +1,12 @@
+{
+  "name": "capacity-php",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Autoneum Capacity — PHP API on IIS with React UI",
+  "scripts": {
+    "dev": "npm --prefix client run dev",
+    "build": "npm --prefix client run build && powershell -NoProfile -ExecutionPolicy Bypass -File tools/publish_client.ps1",
+    "preview": "npm --prefix client run preview",
+    "php:api": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/serve.ps1"
+  }
+}
