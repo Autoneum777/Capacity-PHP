@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/routing.php';
+
 function write_note(PDO $pdo, int $projectId, string $note, string $author, ?int $partId = null, ?int $machineId = null, ?int $operationId = null): void
 {
     $pdo->prepare(
@@ -1358,12 +1360,351 @@ function write_delete_operation(PDO $pdo, int $projectId, int $operationId): voi
     json_response(200, ['ok' => true, 'message' => null]);
 }
 
+function material_optional_number(mixed $value): ?float
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+    if (is_string($value)) {
+        $value = str_replace(',', '.', trim($value));
+    }
+    if (!is_numeric($value)) {
+        return null;
+    }
+    return (float) $value;
+}
+
+function material_baseline_machine(PDO $pdo, int $machineId): array
+{
+    require_permission($pdo, 'machines.edit');
+    $check = $pdo->prepare(
+        'SELECT id, is_baseline, baseline_max_blank_width_mm, baseline_max_blank_width_unit, baseline_min_length_mm
+         FROM machines WHERE id = ?'
+    );
+    $check->execute([$machineId]);
+    $machine = $check->fetch();
+    if (!$machine) {
+        json_response(404, ['error' => 'Not found']);
+    }
+    if ((int) $machine['is_baseline'] !== 1) {
+        json_response(400, ['error' => 'Materiały są dostępne tylko dla maszyny bazowej.']);
+    }
+    return $machine;
+}
+
+function material_parse_body(array $body): array
+{
+    $alias = trim((string) ($body['alias'] ?? ''));
+    $description = trim((string) ($body['description'] ?? ''));
+    $sap = trim((string) ($body['sap_number'] ?? ''));
+    $share = material_optional_number($body['production_share_percent'] ?? 100);
+    $share = $share === null ? 100.0 : min(100.0, max(0.0, $share));
+    $include = ($body['include_in_capacity'] ?? true) === false
+        || ($body['include_in_capacity'] ?? null) === 0
+        || ($body['include_in_capacity'] ?? null) === '0'
+        || ($body['include_in_capacity'] ?? null) === 'false'
+        ? 0
+        : 1;
+    $external = ($body['use_external_volume'] ?? false) === true
+        || ($body['use_external_volume'] ?? null) === 1
+        || ($body['use_external_volume'] ?? null) === '1'
+        || ($body['use_external_volume'] ?? null) === 'true'
+        ? 1
+        : 0;
+    $ids = [];
+    foreach ((array) ($body['designation_ids'] ?? $body['detail_ids'] ?? []) as $value) {
+        $id = (int) $value;
+        if ($id > 0) {
+            $ids[$id] = $id;
+        }
+    }
+    $rawConsumptions = $body['designation_consumptions'] ?? [];
+    if (!is_array($rawConsumptions)) {
+        $rawConsumptions = [];
+    }
+    $consumptions = [];
+    foreach ($ids as $id) {
+        $parsed = material_optional_number($rawConsumptions[$id] ?? $rawConsumptions[(string) $id] ?? 1);
+        $consumptions[$id] = $parsed !== null && $parsed >= 0 ? $parsed : 1.0;
+    }
+    return [
+        'alias' => $alias,
+        'description' => $description,
+        'sap_number' => $sap,
+        'grammage_kg_m2' => material_optional_number($body['grammage_kg_m2'] ?? null),
+        'width_mm' => material_optional_number($body['width_mm'] ?? null),
+        'length_mm' => material_optional_number($body['length_mm'] ?? null),
+        'designation_ids' => array_values($ids),
+        'designation_consumptions' => $consumptions,
+        'include_in_capacity' => $include,
+        'production_share_percent' => $share,
+        'use_external_volume' => $external,
+    ];
+}
+
+function material_replace_parts(PDO $pdo, int $materialId, array $ids, array $consumptions): void
+{
+    $pdo->prepare('DELETE FROM machine_baseline_material_parts WHERE material_id = ?')->execute([$materialId]);
+    $exists = $pdo->prepare('SELECT 1 FROM part_designations WHERE id = ?');
+    $insert = $pdo->prepare(
+        'INSERT OR IGNORE INTO machine_baseline_material_parts (material_id, designation_id, consumption_per_detail) VALUES (?, ?, ?)'
+    );
+    foreach ($ids as $id) {
+        $exists->execute([$id]);
+        if (!$exists->fetch()) {
+            continue;
+        }
+        $insert->execute([$materialId, $id, $consumptions[$id] ?? 1]);
+    }
+}
+
+function material_public_row(PDO $pdo, int $machineId, int $materialId): array
+{
+    $rows = machine_materials($pdo, $machineId);
+    if (!is_array($rows) || isset($rows['error'])) {
+        json_response(500, ['error' => 'Nie udało się odczytać materiału.']);
+    }
+    foreach ($rows as $row) {
+        if ((int) ($row['id'] ?? 0) === $materialId) {
+            return $row;
+        }
+    }
+    json_response(500, ['error' => 'Nie udało się odczytać materiału.']);
+}
+
+function material_require_owned(PDO $pdo, int $machineId, int $materialId): void
+{
+    $stmt = $pdo->prepare('SELECT id FROM machine_baseline_materials WHERE id = ? AND machine_id = ?');
+    $stmt->execute([$materialId, $machineId]);
+    if (!$stmt->fetch()) {
+        json_response(404, ['error' => 'Not found']);
+    }
+}
+
+function write_material_create(PDO $pdo, int $machineId): void
+{
+    $machine = material_baseline_machine($pdo, $machineId);
+    $body = material_parse_body(request_json());
+    if ($body['width_mm'] !== null && $body['length_mm'] !== null) {
+        $oriented = baseline_orient($machine, $body['width_mm'], $body['length_mm']);
+        $body['width_mm'] = $oriented['widthMm'];
+        $body['length_mm'] = $oriented['lengthMm'];
+    }
+    if ($body['alias'] === '' && $body['sap_number'] === '') {
+        json_response(400, ['error' => 'Podaj alias lub numer SAP materiału.']);
+    }
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare(
+            'INSERT INTO machine_baseline_materials
+                (machine_id, alias, description, sap_number, grammage_kg_m2, width_mm, length_mm,
+                 include_in_capacity, production_share_percent, use_external_volume)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            $machineId,
+            $body['alias'] !== '' ? $body['alias'] : null,
+            $body['description'] !== '' ? $body['description'] : null,
+            $body['sap_number'] !== '' ? $body['sap_number'] : null,
+            $body['grammage_kg_m2'],
+            $body['width_mm'],
+            $body['length_mm'],
+            $body['include_in_capacity'],
+            $body['production_share_percent'],
+            $body['use_external_volume'],
+        ]);
+        $materialId = (int) $pdo->lastInsertId();
+        material_replace_parts($pdo, $materialId, $body['designation_ids'], $body['designation_consumptions']);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        json_response(400, ['error' => 'Nie udało się zapisać materiału.']);
+    }
+    json_response(201, material_public_row($pdo, $machineId, $materialId));
+}
+
+function write_material_update(PDO $pdo, int $machineId, int $materialId): void
+{
+    $machine = material_baseline_machine($pdo, $machineId);
+    material_require_owned($pdo, $machineId, $materialId);
+    $body = material_parse_body(request_json());
+    if ($body['width_mm'] !== null && $body['length_mm'] !== null) {
+        $oriented = baseline_orient($machine, $body['width_mm'], $body['length_mm']);
+        $body['width_mm'] = $oriented['widthMm'];
+        $body['length_mm'] = $oriented['lengthMm'];
+    }
+    if ($body['alias'] === '' && $body['sap_number'] === '') {
+        json_response(400, ['error' => 'Podaj alias lub numer SAP materiału.']);
+    }
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare(
+            'UPDATE machine_baseline_materials
+             SET alias = ?, description = ?, sap_number = ?, grammage_kg_m2 = ?, width_mm = ?, length_mm = ?,
+                 include_in_capacity = ?, production_share_percent = ?, use_external_volume = ?
+             WHERE id = ? AND machine_id = ?'
+        )->execute([
+            $body['alias'] !== '' ? $body['alias'] : null,
+            $body['description'] !== '' ? $body['description'] : null,
+            $body['sap_number'] !== '' ? $body['sap_number'] : null,
+            $body['grammage_kg_m2'],
+            $body['width_mm'],
+            $body['length_mm'],
+            $body['include_in_capacity'],
+            $body['production_share_percent'],
+            $body['use_external_volume'],
+            $materialId,
+            $machineId,
+        ]);
+        material_replace_parts($pdo, $materialId, $body['designation_ids'], $body['designation_consumptions']);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        json_response(400, ['error' => 'Nie udało się zapisać materiału.']);
+    }
+    json_response(200, material_public_row($pdo, $machineId, $materialId));
+}
+
+function write_material_delete(PDO $pdo, int $machineId, int $materialId): void
+{
+    material_baseline_machine($pdo, $machineId);
+    $stmt = $pdo->prepare('DELETE FROM machine_baseline_materials WHERE id = ? AND machine_id = ?');
+    $stmt->execute([$materialId, $machineId]);
+    if ($stmt->rowCount() === 0) {
+        json_response(404, ['error' => 'Not found']);
+    }
+    write_no_content();
+}
+
+function write_material_external_volumes(PDO $pdo, int $machineId, int $materialId): void
+{
+    material_baseline_machine($pdo, $machineId);
+    material_require_owned($pdo, $machineId, $materialId);
+    $body = request_json();
+    $rows = array_is_list($body) ? $body : [];
+    $upsert = $pdo->prepare(
+        'INSERT INTO machine_baseline_material_volumes (material_id, year, weekly_volume)
+         VALUES (?, ?, ?)
+         ON CONFLICT(material_id, year) DO UPDATE SET weekly_volume = excluded.weekly_volume'
+    );
+    $deleteYear = $pdo->prepare('DELETE FROM machine_baseline_material_volumes WHERE material_id = ? AND year = ?');
+    $sentYears = [];
+    $pdo->beginTransaction();
+    try {
+        foreach ($rows as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            $year = material_optional_number($entry['year'] ?? null);
+            $volume = material_optional_number($entry['weekly_volume'] ?? null);
+            if ($year === null || $year < 1900 || $year > 2100) {
+                continue;
+            }
+            $year = (int) $year;
+            $sentYears[$year] = $year;
+            if ($volume === null || $volume < 0) {
+                $deleteYear->execute([$materialId, $year]);
+            } else {
+                $upsert->execute([$materialId, $year, $volume]);
+            }
+        }
+        if ($sentYears === []) {
+            $pdo->prepare('DELETE FROM machine_baseline_material_volumes WHERE material_id = ?')->execute([$materialId]);
+        } else {
+            $placeholders = implode(',', array_fill(0, count($sentYears), '?'));
+            $pdo->prepare(
+                "DELETE FROM machine_baseline_material_volumes WHERE material_id = ? AND year NOT IN ($placeholders)"
+            )->execute([$materialId, ...array_values($sentYears)]);
+        }
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        json_response(400, ['error' => 'Nie udało się zapisać wolumenów materiału.']);
+    }
+    $list = $pdo->prepare('SELECT year, weekly_volume FROM machine_baseline_material_volumes WHERE material_id = ? ORDER BY year');
+    $list->execute([$materialId]);
+    $out = [];
+    foreach ($list as $row) {
+        $out[] = ['year' => (int) $row['year'], 'weekly_volume' => (float) $row['weekly_volume']];
+    }
+    json_response(200, $out);
+}
+
+function write_baseline_materials_bulk_delete(PDO $pdo, int $machineId): void
+{
+    require_permission($pdo, 'machines.edit');
+    $check = $pdo->prepare('SELECT id, is_baseline FROM machines WHERE id = ?');
+    $check->execute([$machineId]);
+    $machine = $check->fetch();
+    if (!$machine) {
+        json_response(404, ['error' => 'Not found']);
+    }
+    if ((int) $machine['is_baseline'] !== 1) {
+        json_response(400, ['error' => 'Materiały są dostępne tylko dla maszyny bazowej.']);
+    }
+    $body = request_json();
+    $all = ($body['all'] ?? false) === true || ($body['all'] ?? null) === 1 || ($body['all'] ?? null) === '1';
+    $materialIds = [];
+    if ($all) {
+        $stmt = $pdo->prepare('SELECT id FROM machine_baseline_materials WHERE machine_id = ?');
+        $stmt->execute([$machineId]);
+        foreach ($stmt as $row) {
+            $materialIds[] = (int) $row['id'];
+        }
+    } else {
+        $raw = $body['ids'] ?? [];
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+        foreach ($raw as $value) {
+            $id = (int) $value;
+            if ($id > 0) {
+                $materialIds[$id] = $id;
+            }
+        }
+        $materialIds = array_values($materialIds);
+        if ($materialIds === []) {
+            json_response(400, ['error' => 'Zaznacz pozycje do usunięcia.']);
+        }
+    }
+    $deleted = 0;
+    $pdo->beginTransaction();
+    try {
+        if ($materialIds !== []) {
+            $placeholders = implode(',', array_fill(0, count($materialIds), '?'));
+            $pdo->prepare("DELETE FROM machine_baseline_material_volumes WHERE material_id IN ($placeholders)")->execute($materialIds);
+            $pdo->prepare("DELETE FROM machine_baseline_material_parts WHERE material_id IN ($placeholders)")->execute($materialIds);
+            if ($all) {
+                $delete = $pdo->prepare('DELETE FROM machine_baseline_materials WHERE machine_id = ?');
+                $delete->execute([$machineId]);
+            } else {
+                $delete = $pdo->prepare("DELETE FROM machine_baseline_materials WHERE id IN ($placeholders) AND machine_id = ?");
+                $delete->execute([...$materialIds, $machineId]);
+            }
+            $deleted = $delete->rowCount();
+        }
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        json_response(400, ['error' => 'Nie udało się usunąć materiałów.']);
+    }
+    json_response(200, ['deleted' => $deleted]);
+}
+
 function handle_writes(string $method, string $path): bool
 {
     if ($method !== 'POST' && $method !== 'PUT' && $method !== 'DELETE') {
         return false;
     }
     $machineId = 0;
+    $materialId = 0;
     $projectId = 0;
     $partId = 0;
     $operationId = 0;
@@ -1371,6 +1712,27 @@ function handle_writes(string $method, string $path): bool
     $route = '';
     if ($method === 'POST' && $path === '/machines') {
         $route = 'machine-create';
+    } elseif ($method === 'POST' && preg_match('#^/machines/(\d+)/materials/import-routing$#', $path, $match) === 1) {
+        $route = 'materials-import-routing';
+        $machineId = (int) $match[1];
+    } elseif ($method === 'POST' && preg_match('#^/machines/(\d+)/materials/bulk-delete$#', $path, $match) === 1) {
+        $route = 'materials-bulk-delete';
+        $machineId = (int) $match[1];
+    } elseif ($method === 'POST' && preg_match('#^/machines/(\d+)/materials$#', $path, $match) === 1) {
+        $route = 'materials-create';
+        $machineId = (int) $match[1];
+    } elseif ($method === 'PUT' && preg_match('#^/machines/(\d+)/materials/(\d+)/external-volumes$#', $path, $match) === 1) {
+        $route = 'materials-volumes';
+        $machineId = (int) $match[1];
+        $materialId = (int) $match[2];
+    } elseif ($method === 'PUT' && preg_match('#^/machines/(\d+)/materials/(\d+)$#', $path, $match) === 1) {
+        $route = 'materials-update';
+        $machineId = (int) $match[1];
+        $materialId = (int) $match[2];
+    } elseif ($method === 'DELETE' && preg_match('#^/machines/(\d+)/materials/(\d+)$#', $path, $match) === 1) {
+        $route = 'materials-delete';
+        $machineId = (int) $match[1];
+        $materialId = (int) $match[2];
     } elseif ($method === 'PUT' && preg_match('#^/machines/(\d+)$#', $path, $match) === 1) {
         $route = 'machine-update';
         $machineId = (int) $match[1];
@@ -1437,6 +1799,24 @@ function handle_writes(string $method, string $path): bool
     }
     $pdo = open_database();
     bootstrap_admin($pdo);
+    if ($route === 'materials-import-routing') {
+        routing_import_materials($pdo, $machineId);
+    }
+    if ($route === 'materials-bulk-delete') {
+        write_baseline_materials_bulk_delete($pdo, $machineId);
+    }
+    if ($route === 'materials-create') {
+        write_material_create($pdo, $machineId);
+    }
+    if ($route === 'materials-update') {
+        write_material_update($pdo, $machineId, $materialId);
+    }
+    if ($route === 'materials-delete') {
+        write_material_delete($pdo, $machineId, $materialId);
+    }
+    if ($route === 'materials-volumes') {
+        write_material_external_volumes($pdo, $machineId, $materialId);
+    }
     if ($route === 'machine-create') {
         write_machine($pdo, null);
     }

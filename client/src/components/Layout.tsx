@@ -27,6 +27,7 @@ import {
   type WorkspaceThemeColors,
   type WorkspaceThemeSettings,
 } from '../utils/workspaceTheme';
+import { PHP_VERSION_HEADER_BG, PHP_VERSION_MARKER, PHP_VERSION_PAGE_BG } from '../phpVersionMarker';
 
 type HeaderCollapse = 'none' | 'right' | 'both';
 
@@ -779,7 +780,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         minHeight: '100vh',
         display: 'flex',
         flexDirection: 'column',
-        background: theme.page_bg,
+        background: PHP_VERSION_MARKER ? PHP_VERSION_PAGE_BG : theme.page_bg,
       }}
     >
       {scenarioChrome && (
@@ -837,7 +838,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         className="app-header"
         data-collapse={headerCollapse}
         style={{
-          background: theme.header_bg,
+          background: PHP_VERSION_MARKER ? PHP_VERSION_HEADER_BG : theme.header_bg,
           color: '#333',
           padding: '0.5rem 1.25rem',
           minHeight: 52,
@@ -850,6 +851,27 @@ export default function Layout({ children }: { children: ReactNode }) {
           position: 'relative',
         }}
       >
+        {PHP_VERSION_MARKER && (
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              zIndex: 5,
+              pointerEvents: 'none',
+              fontSize: '1.75rem',
+              fontWeight: 800,
+              lineHeight: 1,
+              color: '#7a5b00',
+              letterSpacing: '0.04em',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            wersja PHP
+          </span>
+        )}
         <div className="app-header-measure-row" aria-hidden>
           <nav ref={navMeasureRef} className="app-header-measure-group">
             {renderNavLinks(false)}
@@ -1045,7 +1067,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         style={{
           flex: 1,
           padding: '1.5rem',
-          background: theme.main_bg,
+          background: PHP_VERSION_MARKER ? PHP_VERSION_PAGE_BG : theme.main_bg,
         }}
       >
         {children}

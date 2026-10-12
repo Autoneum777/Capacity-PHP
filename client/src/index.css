@@ -1,5 +1,6 @@
 * { box-sizing: border-box; }
 body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #fff; }
+body.php-version-marker { background: #fff6cc; }
 #root { min-height: 100vh; }
 
 /* Autoneum brand: lime green #A4C400 */

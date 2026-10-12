@@ -4698,21 +4698,28 @@ function AllocationModal({
     [selectedGroups, operations]
   );
   const operationSopEopYears = useMemo(() => {
-    if (selectedOps.length === 0) return yearRange;
-    const union = new Set<number>();
-    let any = false;
-    for (const op of selectedOps) {
-      const fromVolumes = Array.isArray(op.volume_years)
+    const groupOps = operations.filter((op) =>
+      selectedGroups.some((g) => g.operationIds.some((id) => Number(id) === Number(op.id)))
+    );
+    if (groupOps.length === 0) return yearRange;
+    const positiveYears = (op: any): number[] =>
+      Array.isArray(op.volume_years)
         ? op.volume_years.map((y: unknown) => Number(y)).filter((y: number) => Number.isFinite(y) && y > 0)
         : [];
-      const years = fromVolumes.length > 0 ? fromVolumes : sopEopYearsRange(op.sop ?? '', op.eop ?? '').years;
-      if (!years.length) continue;
-      any = true;
-      for (const y of years) union.add(y);
+    const union = new Set<number>();
+    const hasVolumeYearList = groupOps.some((op) => Array.isArray(op.volume_years));
+    if (hasVolumeYearList) {
+      for (const op of groupOps) {
+        for (const y of positiveYears(op)) union.add(y);
+      }
+    } else {
+      for (const op of groupOps) {
+        for (const y of sopEopYearsRange(op.sop ?? '', op.eop ?? '').years) union.add(y);
+      }
     }
-    if (!any) return yearRange;
+    if (union.size === 0) return yearRange;
     return [...union].sort((a, b) => a - b);
-  }, [selectedOps, yearRange]);
+  }, [operations, selectedGroups, yearRange]);
 
   useEffect(() => {
     if (selectedOps.length === 0 || operationSopEopYears.length === 0) return;
@@ -4726,7 +4733,10 @@ function AllocationModal({
     setSelectedYears((prev) => {
       const allowed = new Set(operationSopEopYears);
       const next = prev.filter((y) => allowed.has(y));
-      return next.length > 0 ? next : [...operationSopEopYears];
+      if (next.length === prev.length) return prev;
+      if (next.length > 0) return next;
+      if (prev.length === 0) return prev;
+      return [...operationSopEopYears];
     });
   }, [yearMode, operationSopEopYears, selectedGroupKeys.join('|')]);
   const altCycleSeconds = useMemo(() => {

@@ -5,6 +5,7 @@ import LanguageSwitcher from '../components/LanguageSwitcher';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { API_UNREACHABLE_MESSAGE } from '../i18n/apiErrors';
+import { PHP_VERSION_MARKER, PHP_VERSION_PAGE_BG, PhpVersionMark } from '../phpVersionMarker';
 
 type AdminContact = {
   display_name: string | null;
@@ -113,10 +114,11 @@ export default function Login() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: '#f5f5f5',
+        background: PHP_VERSION_MARKER ? PHP_VERSION_PAGE_BG : '#f5f5f5',
         padding: 16,
       }}
     >
+      <PhpVersionMark />
       <div
         style={{
           background: 'white',

@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useI18n } from '../context/I18nContext';
+import { PHP_VERSION_MARKER, PHP_VERSION_PAGE_BG, PhpVersionMark } from '../phpVersionMarker';
 
 export default function ForgotPassword() {
   const { t } = useI18n();
@@ -26,7 +27,8 @@ export default function ForgotPassword() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: PHP_VERSION_MARKER ? PHP_VERSION_PAGE_BG : '#f5f5f5' }}>
+      <PhpVersionMark />
       <form
         onSubmit={onSubmit}
         style={{ background: 'white', padding: '2rem', borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', width: 'min(400px, 92vw)' }}

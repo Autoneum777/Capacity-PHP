@@ -1313,6 +1313,31 @@ function machine_operation_rows(PDO $pdo, int $machineId): array
     return $rows;
 }
 
+function machine_material_external_volumes(PDO $pdo, int $machineId, int $materialId): ?array
+{
+    $check = $pdo->prepare('SELECT id, is_baseline FROM machines WHERE id = ?');
+    $check->execute([$machineId]);
+    $machine = $check->fetch();
+    if (!$machine) {
+        return null;
+    }
+    if ((int) $machine['is_baseline'] !== 1) {
+        return ['error' => 'Materiały są dostępne tylko dla maszyny bazowej.'];
+    }
+    $material = $pdo->prepare('SELECT id FROM machine_baseline_materials WHERE id = ? AND machine_id = ?');
+    $material->execute([$materialId, $machineId]);
+    if (!$material->fetch()) {
+        return null;
+    }
+    $stmt = $pdo->prepare('SELECT year, weekly_volume FROM machine_baseline_material_volumes WHERE material_id = ? ORDER BY year');
+    $stmt->execute([$materialId]);
+    $rows = [];
+    foreach ($stmt as $row) {
+        $rows[] = ['year' => (int) $row['year'], 'weekly_volume' => (float) $row['weekly_volume']];
+    }
+    return $rows;
+}
+
 function handle_reads(string $method, string $path): bool
 {
     if ($method !== 'GET') {
@@ -1334,10 +1359,15 @@ function handle_reads(string $method, string $path): bool
     }
 
     $machineId = 0;
+    $materialVolumeId = 0;
     $machineRoute = '';
     if (preg_match('#^/machines/(\d+)$#', $path, $match) === 1) {
         $machineRoute = 'detail';
         $machineId = (int) $match[1];
+    } elseif (preg_match('#^/machines/(\d+)/materials/(\d+)/external-volumes$#', $path, $match) === 1) {
+        $machineRoute = 'material-volumes';
+        $machineId = (int) $match[1];
+        $materialVolumeId = (int) $match[2];
     } elseif (preg_match('#^/machines/(\d+)/materials$#', $path, $match) === 1) {
         $machineRoute = 'materials';
         $machineId = (int) $match[1];
@@ -1424,6 +1454,16 @@ function handle_reads(string $method, string $path): bool
             json_response(200, $active);
         }
         require_any_permission($pdo, ['machines.details', 'machines.edit']);
+        if ($machineRoute === 'material-volumes') {
+            $volumes = machine_material_external_volumes($pdo, $machineId, $materialVolumeId);
+            if ($volumes === null) {
+                json_response(404, ['error' => 'Not found']);
+            }
+            if (isset($volumes['error'])) {
+                json_response(400, $volumes);
+            }
+            json_response(200, $volumes);
+        }
         if ($machineRoute === 'materials') {
             $materials = machine_materials($pdo, $machineId);
             if ($materials === null) {
