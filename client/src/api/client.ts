@@ -1520,6 +1520,12 @@ export const api = {
         weekly_volume_effective: number;
         working_weeks_per_year: number;
         year_fraction: number;
+        operation_contributions?: {
+          operation_id: number;
+          weekly_volume_effective: number;
+          required_seconds: number;
+          load_percent: number;
+        }[];
       }>(`/allocation/hint/${machineId}${q ? `?${q}` : ''}`);
     },
     execute: (body: {
@@ -1705,19 +1711,41 @@ export const api = {
     undoAllocationMove: (scenarioId: number) =>
       request<{ ok: boolean; label?: string }>(`/scenarios/${scenarioId}/allocation-moves/undo`, { method: 'POST' }),
     addableProjects: (scenarioId: number) =>
-      request<{ id: number; client: string; name: string; sop: string | null; eop: string | null; status: string }[]>(
-        `/scenarios/${scenarioId}/addable-projects`
-      ),
-    addProjectsFromCapacity: (scenarioId: number, body: { projectIds: number[] }) =>
+      request<
+        {
+          id: number;
+          client: string;
+          name: string;
+          sop: string | null;
+          eop: string | null;
+          status: string;
+          baseline_materials?: {
+            id: number;
+            alias: string | null;
+            sap_number: string | null;
+            machine_id: number;
+            internal_number: string | number | null;
+          }[];
+        }[]
+      >(`/scenarios/${scenarioId}/addable-projects`),
+    addProjectsFromCapacity: (scenarioId: number, body: { projectIds: number[]; activateBaselineMaterials?: boolean }) =>
       request<{
         ok: boolean;
         addedProjectIds: number[];
         skippedAlreadyInBundle: number[];
         notFoundInProduction: number[];
+        activatedBaselineMaterialIds?: number[];
       }>(`/scenarios/${scenarioId}/add-projects-from-capacity`, {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    baselineMaterials: (scenarioId: number, machineId: number) =>
+      request<any[]>(`/scenarios/${scenarioId}/machines/${machineId}/baseline-materials`),
+    setBaselineMaterialActive: (scenarioId: number, machineId: number, materialId: number, active: boolean) =>
+      request<{ id: number; scenario_active: number }>(
+        `/scenarios/${scenarioId}/machines/${machineId}/baseline-materials/${materialId}`,
+        { method: 'PATCH', body: JSON.stringify({ active }) }
+      ),
     deployChallenge: (id: number) =>
       request<{ phrase: string; expiresInSec: number; deployToken: string }>(`/scenarios/${id}/deploy-challenge`),
     applyToProduction: (id: number, body: { challengePhrase: string; deployToken: string }) =>

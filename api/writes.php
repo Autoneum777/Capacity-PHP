@@ -1483,13 +1483,11 @@ function material_require_owned(PDO $pdo, int $machineId, int $materialId): void
 
 function write_material_create(PDO $pdo, int $machineId): void
 {
-    $machine = material_baseline_machine($pdo, $machineId);
-    $body = material_parse_body(request_json());
-    if ($body['width_mm'] !== null && $body['length_mm'] !== null) {
-        $oriented = baseline_orient($machine, $body['width_mm'], $body['length_mm']);
-        $body['width_mm'] = $oriented['widthMm'];
-        $body['length_mm'] = $oriented['lengthMm'];
+    if (function_exists('scenario_freeze_legacy_baseline_materials')) {
+        scenario_freeze_legacy_baseline_materials($pdo);
     }
+    material_baseline_machine($pdo, $machineId);
+    $body = material_parse_body(request_json());
     if ($body['alias'] === '' && $body['sap_number'] === '') {
         json_response(400, ['error' => 'Podaj alias lub numer SAP materiału.']);
     }
@@ -1526,14 +1524,9 @@ function write_material_create(PDO $pdo, int $machineId): void
 
 function write_material_update(PDO $pdo, int $machineId, int $materialId): void
 {
-    $machine = material_baseline_machine($pdo, $machineId);
+    material_baseline_machine($pdo, $machineId);
     material_require_owned($pdo, $machineId, $materialId);
     $body = material_parse_body(request_json());
-    if ($body['width_mm'] !== null && $body['length_mm'] !== null) {
-        $oriented = baseline_orient($machine, $body['width_mm'], $body['length_mm']);
-        $body['width_mm'] = $oriented['widthMm'];
-        $body['length_mm'] = $oriented['lengthMm'];
-    }
     if ($body['alias'] === '' && $body['sap_number'] === '') {
         json_response(400, ['error' => 'Podaj alias lub numer SAP materiału.']);
     }

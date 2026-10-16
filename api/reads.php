@@ -1112,11 +1112,6 @@ function machine_materials(PDO $pdo, int $machineId): ?array
         $row['designation_ids'] = array_map(fn(array $detail): int => $detail['id'], $details);
         $row['blank_mass_kg'] = blank_mass_kg($row['grammage_kg_m2'], $row['width_mm'], $row['length_mm']);
         $hourly = baseline_hourly_capacity($machine, $row);
-        if (is_numeric($row['width_mm']) && is_numeric($row['length_mm'])) {
-            $oriented = baseline_orient($machine, (float) $row['width_mm'], (float) $row['length_mm']);
-            $row['width_mm'] = $oriented['widthMm'];
-            $row['length_mm'] = $oriented['lengthMm'];
-        }
         $row['blanks_across'] = $hourly['blanksAcross'] ?? null;
         $row['web_width_mm'] = $hourly['webWidthMm'] ?? null;
         $row['web_mass_kg'] = $hourly['webMassKg'] ?? null;

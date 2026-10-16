@@ -275,7 +275,9 @@ function allocation_hint(PDO $pdo, int $machineId): void
     $chosen = [];
     foreach ($ids as $id) {
         if (isset($stats['ops'][$id])) {
-            $chosen[] = $stats['ops'][$id];
+            $operation = $stats['ops'][$id];
+            $operation['operation_id'] = $id;
+            $chosen[] = $operation;
         }
     }
     if ($chosen === []) {
@@ -306,6 +308,20 @@ function allocation_hint(PDO $pdo, int $machineId): void
         'weekly_volume_effective' => round($weekly, 6),
         'working_weeks_per_year' => (float) $stats['settings']['working_weeks_per_year'],
         'year_fraction' => round($fraction, 6),
+        'operation_contributions' => array_map(
+            fn(array $row): array => [
+                'operation_id' => (int) $row['operation_id'],
+                'weekly_volume_effective' => round((float) $row['weekly'], 6),
+                'required_seconds' => round((float) $row['seconds'], 6),
+                'load_percent' => round(
+                    $stats['required'] > 1e-9
+                        ? ((float) $row['seconds'] / (float) $stats['required']) * (float) $stats['load_percent']
+                        : 0.0,
+                    6
+                ),
+            ],
+            $chosen
+        ),
     ];
     $hint['suggested_volume_to_reach_100'] = allocation_volume_for_remaining($hint, 100, $hint['weekly_volume_effective'])['volume'];
     json_response(200, $hint);

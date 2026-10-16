@@ -133,11 +133,26 @@ export default function ScenarioView() {
   const [addProjectsModalOpen, setAddProjectsModalOpen] = useState(false);
   const [addProjectsLoading, setAddProjectsLoading] = useState(false);
   const [addProjectsCandidates, setAddProjectsCandidates] = useState<
-    { id: number; client: string; name: string; sop: string | null; eop: string | null; status: string }[]
+    {
+      id: number;
+      client: string;
+      name: string;
+      sop: string | null;
+      eop: string | null;
+      status: string;
+      baseline_materials?: {
+        id: number;
+        alias: string | null;
+        sap_number: string | null;
+        machine_id: number;
+        internal_number: string | number | null;
+      }[];
+    }[]
   >([]);
   const [addProjectsPick, setAddProjectsPick] = useState<number[]>([]);
   const [addProjectsBusy, setAddProjectsBusy] = useState(false);
   const [addProjectsError, setAddProjectsError] = useState<string | null>(null);
+  const [activateMaterialsPrompt, setActivateMaterialsPrompt] = useState(false);
   const [scenarioActionInfo, setScenarioActionInfo] = useState<string | null>(null);
   const [volumeModalPart, setVolumeModalPart] = useState<{ part: any; project: any } | null>(null);
   const [volumeDraft, setVolumeDraft] = useState<VolumeDraftRow[]>([]);
@@ -616,6 +631,7 @@ export default function ScenarioView() {
     if (!scenario?.id || scenario.archived_at) return;
     setAddProjectsError(null);
     setScenarioActionInfo(null);
+    setActivateMaterialsPrompt(false);
     setAddProjectsPick([]);
     setAddProjectsModalOpen(true);
     setAddProjectsLoading(true);
@@ -640,15 +656,33 @@ export default function ScenarioView() {
     setAddProjectsPick((prev) => (ids.length > 0 && ids.every((i) => prev.includes(i)) ? [] : ids));
   };
 
-  const submitAddProjectsFromCapacity = async () => {
+  const rfqMaterialsToActivate = addProjectsCandidates
+    .filter((c) => addProjectsPick.includes(c.id) && c.status === 'RFQ' && (c.baseline_materials?.length ?? 0) > 0)
+    .flatMap((c) =>
+      (c.baseline_materials ?? []).map((material) => ({
+        ...material,
+        projectName: c.name,
+      }))
+    );
+
+  const submitAddProjectsFromCapacity = async (activateBaselineMaterials?: boolean) => {
     if (!scenario?.id || addProjectsPick.length === 0) return;
+    if (activateBaselineMaterials === undefined && rfqMaterialsToActivate.length > 0) {
+      setActivateMaterialsPrompt(true);
+      return;
+    }
+    setActivateMaterialsPrompt(false);
     setAddProjectsBusy(true);
     setAddProjectsError(null);
     try {
-      const r = await api.scenarios.addProjectsFromCapacity(scenario.id, { projectIds: addProjectsPick });
+      const r = await api.scenarios.addProjectsFromCapacity(scenario.id, {
+        projectIds: addProjectsPick,
+        activateBaselineMaterials: activateBaselineMaterials === true,
+      });
       const fresh = await api.scenarios.get(scenario.id);
       setScenario(fresh);
       setAddProjectsModalOpen(false);
+      setActivateMaterialsPrompt(false);
       setAddProjectsPick([]);
       const parts: string[] = [`Dodano ${r.addedProjectIds.length} projekt(ów) do scenariusza.`];
       if (r.skippedAlreadyInBundle?.length) parts.push(`Pominięto (już w scenariuszu): ${r.skippedAlreadyInBundle.join(', ')}.`);
@@ -725,7 +759,11 @@ export default function ScenarioView() {
             zIndex: 1100,
             padding: 16,
           }}
-          onClick={() => !addProjectsBusy && setAddProjectsModalOpen(false)}
+          onClick={() => {
+            if (addProjectsBusy) return;
+            setActivateMaterialsPrompt(false);
+            setAddProjectsModalOpen(false);
+          }}
         >
           <div
             style={{
@@ -813,7 +851,10 @@ export default function ScenarioView() {
               <button
                 type="button"
                 disabled={addProjectsBusy}
-                onClick={() => setAddProjectsModalOpen(false)}
+                onClick={() => {
+                  setActivateMaterialsPrompt(false);
+                  setAddProjectsModalOpen(false);
+                }}
                 style={{ padding: '0.5rem 1rem', background: '#9e9e9e', color: 'white', border: 'none', borderRadius: 4, cursor: addProjectsBusy ? 'not-allowed' : 'pointer' }}
               >
                 {t('common.cancel')}
@@ -833,6 +874,72 @@ export default function ScenarioView() {
                 }}
               >
                 {addProjectsBusy ? t('scenarioViewExtra.adding') : t('scenarioViewExtra.addSelected')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {activateMaterialsPrompt && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="activate-baseline-materials-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1200,
+            padding: 16,
+          }}
+          onClick={() => !addProjectsBusy && setActivateMaterialsPrompt(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              maxWidth: 520,
+              width: '100%',
+              padding: '1.25rem',
+              borderRadius: 8,
+              boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="activate-baseline-materials-title" style={{ marginTop: 0, fontSize: '1.15rem' }}>
+              {t('scenarioViewExtra.activateMaterialsTitle')}
+            </h2>
+            <p style={{ color: '#555', fontSize: 14, lineHeight: 1.45 }}>{t('scenarioViewExtra.activateMaterialsQuestion')}</p>
+            <ul style={{ margin: '0 0 1rem', paddingLeft: '1.2rem', fontSize: 14 }}>
+              {Array.from(new Map(rfqMaterialsToActivate.map((material) => [material.id, material])).values()).map((material) => {
+                const name = [material.alias, material.sap_number].filter((part) => part != null && String(part).trim() !== '').join(' · ');
+                const machine = material.internal_number != null && String(material.internal_number).trim() !== '' ? String(material.internal_number) : '';
+                return (
+                  <li key={material.id}>
+                    {name !== '' ? name : `#${material.id}`}
+                    {machine !== '' ? ` (${machine})` : ''}
+                    {material.projectName ? ` — ${material.projectName}` : ''}
+                  </li>
+                );
+              })}
+            </ul>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                type="button"
+                disabled={addProjectsBusy}
+                onClick={() => void submitAddProjectsFromCapacity(false)}
+                style={{ padding: '0.5rem 1rem', background: '#9e9e9e', color: 'white', border: 'none', borderRadius: 4, cursor: addProjectsBusy ? 'not-allowed' : 'pointer' }}
+              >
+                {t('scenarioViewExtra.activateMaterialsNo')}
+              </button>
+              <button
+                type="button"
+                disabled={addProjectsBusy}
+                onClick={() => void submitAddProjectsFromCapacity(true)}
+                style={{ padding: '0.5rem 1rem', background: 'var(--cap-green)', color: 'white', border: 'none', borderRadius: 4, fontWeight: 600, cursor: addProjectsBusy ? 'not-allowed' : 'pointer' }}
+              >
+                {t('scenarioViewExtra.activateMaterialsYes')}
               </button>
             </div>
           </div>

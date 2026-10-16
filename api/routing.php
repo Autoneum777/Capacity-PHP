@@ -243,6 +243,9 @@ function routing_components_via_subassemblies(array $index, string $finishedGood
 
 function routing_import_materials(PDO $pdo, int $machineId): void
 {
+    if (function_exists('scenario_freeze_legacy_baseline_materials')) {
+        scenario_freeze_legacy_baseline_materials($pdo);
+    }
     require_permission($pdo, 'machines.edit');
     $check = $pdo->prepare(
         'SELECT id, is_baseline, baseline_max_blank_width_mm, baseline_max_blank_width_unit, baseline_min_length_mm

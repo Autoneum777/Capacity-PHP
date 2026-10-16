@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/salesfcst.php';
+
 function calloff_row(PDO $pdo, int $id): ?array
 {
     $stmt = $pdo->prepare('SELECT * FROM call_off_comparisons WHERE id = ?');
@@ -51,9 +53,10 @@ function calloff_get(PDO $pdo, int $id): void
     $count->execute([$id]);
     $stats = $count->fetch();
     $public = calloff_public($row, (int) ($stats['rows'] ?? 0));
-    $public['source_file_available'] = false;
-    $public['unmatched_report_available'] = false;
-    $public['last_import'] = null;
+    $lastImport = json_decode((string) ($row['last_import_json'] ?? ''), true);
+    $public['source_file_available'] = salesfcst_source_path($id, $row['source_stored_filename'] ?? null) !== null;
+    $public['unmatched_report_available'] = salesfcst_unmatched_path($id) !== null;
+    $public['last_import'] = is_array($lastImport) ? $lastImport : null;
     $public['stats'] = [
         'row_count' => (int) ($stats['rows'] ?? 0),
         'sap_count' => (int) ($stats['saps'] ?? 0),
@@ -390,22 +393,145 @@ function calloff_breakdown(PDO $pdo, array $machines, int $year, ?int $month): a
     ];
 }
 
+function calloff_uploaded_file(): array
+{
+    $file = $_FILES['file'] ?? null;
+    if (!is_array($file) || (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        json_response(400, ['error' => 'Brak pliku SalesFcst (pole: file)']);
+    }
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        json_response(400, ['error' => 'Brak pliku SalesFcst (pole: file)']);
+    }
+    $name = trim((string) ($file['name'] ?? ''));
+    return ['tmp' => $tmp, 'name' => $name !== '' ? $name : 'SalesFcst.xlsx'];
+}
+
+function calloff_create(PDO $pdo): void
+{
+    require_permission($pdo, 'call_offs.edit');
+    $name = trim((string) ($_POST['name'] ?? ''));
+    $notes = trim((string) ($_POST['notes'] ?? ''));
+    if ($name === '') {
+        json_response(400, ['error' => 'Nazwa jest wymagana']);
+    }
+    $file = calloff_uploaded_file();
+    try {
+        $sheet = salesfcst_rows_from_file($file['tmp']);
+        $range = salesfcst_detect_range($sheet);
+    } catch (RuntimeException $error) {
+        json_response(400, ['error' => $error->getMessage()]);
+    }
+    $now = date('Y-m-d H:i:s');
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare(
+            'INSERT INTO call_off_comparisons (name, date_from, date_to, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+        )->execute([$name, $range['date_from'], $range['date_to'], $notes !== '' ? $notes : null, $now, $now]);
+        $id = (int) $pdo->lastInsertId();
+        $import = salesfcst_import($pdo, $id, $file['tmp'], $file['name'], $range['date_from'], $range['date_to'], $sheet);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ($error instanceof RuntimeException) {
+            json_response(400, ['error' => $error->getMessage()]);
+        }
+        json_response(400, ['error' => 'Błąd tworzenia porównania: ' . $error->getMessage()]);
+    }
+    $row = calloff_row($pdo, $id);
+    $public = calloff_public($row, 0);
+    $public['last_import'] = $import;
+    json_response(201, $public);
+}
+
+function calloff_import(PDO $pdo, int $id): void
+{
+    require_permission($pdo, 'call_offs.edit');
+    $row = calloff_row($pdo, $id);
+    if (!$row) {
+        json_response(404, ['error' => 'Nie znaleziono porównania']);
+    }
+    if (trim((string) ($row['archived_at'] ?? '')) !== '') {
+        json_response(400, ['error' => 'Porównanie jest zarchiwizowane — import wyłączony.']);
+    }
+    $file = calloff_uploaded_file();
+    $pdo->beginTransaction();
+    try {
+        $import = salesfcst_import($pdo, $id, $file['tmp'], $file['name'], (string) $row['date_from'], (string) $row['date_to']);
+        $pdo->commit();
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        if ($error instanceof RuntimeException) {
+            json_response(400, ['error' => $error->getMessage()]);
+        }
+        json_response(400, ['error' => 'Błąd importu pliku']);
+    }
+    json_response(200, $import);
+}
+
+function calloff_send_file(string $path, string $downloadName, string $type): void
+{
+    header('Content-Type: ' . $type);
+    header('Content-Disposition: attachment; filename="' . str_replace('"', '', $downloadName) . '"');
+    header('Content-Length: ' . (string) filesize($path));
+    readfile($path);
+    exit;
+}
+
+function calloff_download_source(PDO $pdo, int $id): void
+{
+    require_permission($pdo, 'call_offs.download');
+    $row = calloff_row($pdo, $id);
+    if (!$row) {
+        json_response(404, ['error' => 'Nie znaleziono porównania']);
+    }
+    $path = salesfcst_source_path($id, $row['source_stored_filename'] ?? null);
+    if ($path === null) {
+        json_response(404, ['error' => 'Brak zapisanego pliku źródłowego']);
+    }
+    $name = trim((string) ($row['source_filename'] ?? ''));
+    calloff_send_file($path, $name !== '' ? $name : 'SalesFcst.xlsx', 'application/octet-stream');
+}
+
+function calloff_download_unmatched(PDO $pdo, int $id): void
+{
+    require_permission($pdo, 'call_offs.download');
+    if (!calloff_row($pdo, $id)) {
+        json_response(404, ['error' => 'Nie znaleziono porównania']);
+    }
+    $path = salesfcst_unmatched_path($id);
+    if ($path === null) {
+        json_response(404, ['error' => 'Brak raportu niedopasowanych referencji']);
+    }
+    calloff_send_file($path, 'unmatched.csv', 'text/csv; charset=UTF-8');
+}
+
 function handle_calloffs(string $method, string $path): bool
 {
     if (!str_starts_with($path, '/call-offs')) {
         return false;
     }
-    if ($method !== 'GET') {
-        if ($method === 'POST' && ($path === '/call-offs' || str_contains($path, 'import-sales-fcst'))) {
-            $pdo = open_database();
-            bootstrap_admin($pdo);
-            require_permission($pdo, 'call_offs.edit');
-            json_response(400, ['error' => 'Import Sales Forecast będzie dostępny w kolejnym kroku.']);
-        }
-        return false;
-    }
     $pdo = open_database();
     bootstrap_admin($pdo);
+    if ($method === 'POST' && $path === '/call-offs') {
+        calloff_create($pdo);
+    }
+    if ($method === 'POST' && preg_match('#^/call-offs/(\d+)/import-sales-fcst$#', $path, $match) === 1) {
+        calloff_import($pdo, (int) $match[1]);
+    }
+    if ($method === 'GET' && preg_match('#^/call-offs/(\d+)/source-file$#', $path, $match) === 1) {
+        calloff_download_source($pdo, (int) $match[1]);
+    }
+    if ($method === 'GET' && preg_match('#^/call-offs/(\d+)/unmatched-report$#', $path, $match) === 1) {
+        calloff_download_unmatched($pdo, (int) $match[1]);
+    }
+    if ($method !== 'GET') {
+        return false;
+    }
     if ($path === '/call-offs') {
         calloff_list($pdo);
     }

@@ -6,6 +6,7 @@ import { useReferenceDisplay } from '../context/ReferenceDisplayContext';
 import { formatDetailSapAliasLabel } from '../utils/detailLabel';
 import { blankMassKg } from '../utils/baselineMaterialMass';
 
+type VolumeUnit = 'weekly' | 'monthly' | 'annual';
 type ExternalVolumeRow = { year: number; weekly_volume: string };
 
 type MaterialForm = {
@@ -43,6 +44,28 @@ function parseNum(raw: string): number | null {
   if (!t) return null;
   const n = Number(t.replace(',', '.'));
   return Number.isFinite(n) ? n : null;
+}
+
+function workWeeksOf(weeksPerYear?: number | null): number {
+  const n = Number(weeksPerYear);
+  return Number.isFinite(n) && n >= 1 ? Math.min(53, n) : 52;
+}
+
+function volumeToWeekly(value: number, unit: VolumeUnit, weeks: number): number {
+  if (unit === 'weekly') return value;
+  if (unit === 'monthly') return (value * 12) / weeks;
+  return value / weeks;
+}
+
+function weeklyToVolume(weekly: number, unit: VolumeUnit, weeks: number): number {
+  if (unit === 'weekly') return weekly;
+  if (unit === 'monthly') return (weekly * weeks) / 12;
+  return weekly * weeks;
+}
+
+function formatVolumeInput(value: number): string {
+  if (!Number.isFinite(value)) return '';
+  return String(Math.round(value * 1e6) / 1e6);
 }
 
 function fmtMass(v: number | null | undefined, dash: string): string {
@@ -171,20 +194,20 @@ const EMPTY_FILTERS: MaterialFilters = {
 
 export default function BaselineMaterialsSection({
   machineId,
-  maxBlankWidthMm,
-  maxBlankWidthUnit,
-  minLengthMm,
+  weeksPerYear,
+  scenarioId,
 }: {
   machineId: number;
-  maxBlankWidthMm?: number | null;
-  maxBlankWidthUnit?: string | null;
-  minLengthMm?: number | null;
+  weeksPerYear?: number | null;
+  scenarioId?: number;
 }) {
   const { t, te } = useI18n();
   const { referenceDisplay } = useReferenceDisplay();
   const [list, setList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<MaterialForm>(EMPTY);
+  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>('weekly');
+  const workWeeks = workWeeksOf(weeksPerYear);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -200,6 +223,7 @@ export default function BaselineMaterialsSection({
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [deleting, setDeleting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [materialBusyId, setMaterialBusyId] = useState<number | null>(null);
   const [importResult, setImportResult] = useState<{
     matched_details: number;
     materials_created: number;
@@ -211,8 +235,11 @@ export default function BaselineMaterialsSection({
 
   const load = () => {
     setLoading(true);
-    api.machines.materials
-      .list(machineId)
+    const request =
+      scenarioId != null
+        ? api.scenarios.baselineMaterials(scenarioId, machineId)
+        : api.machines.materials.list(machineId);
+    request
       .then((rows) => {
         setList(rows);
         setSelectedIds((prev) => prev.filter((id) => rows.some((r: any) => Number(r.id) === id)));
@@ -221,9 +248,25 @@ export default function BaselineMaterialsSection({
       .finally(() => setLoading(false));
   };
 
+  const toggleScenarioMaterial = (row: any, active: boolean) => {
+    if (scenarioId == null) return;
+    const materialId = Number(row.id);
+    setMaterialBusyId(materialId);
+    setError('');
+    api.scenarios
+      .setBaselineMaterialActive(scenarioId, machineId, materialId, active)
+      .then(() => {
+        setList((prev) =>
+          prev.map((item) => (Number(item.id) === materialId ? { ...item, scenario_active: active ? 1 : 0 } : item))
+        );
+      })
+      .catch((e) => setError(te(e?.message) || t('common.saveError')))
+      .finally(() => setMaterialBusyId(null));
+  };
+
   useEffect(() => {
     load();
-  }, [machineId]);
+  }, [machineId, scenarioId]);
 
   useEffect(() => {
     setSelectedIds([]);
@@ -246,44 +289,6 @@ export default function BaselineMaterialsSection({
     if (g == null || w == null || l == null) return { after: null as number | null };
     return { after: blankMassKg(g, w, l) };
   }, [form.grammage_kg_m2, form.width_mm, form.length_mm]);
-
-  const orientDimensions = (first: number, second: number) => {
-    const configuredWidth = Number(maxBlankWidthMm);
-    const maxWidth =
-      Number.isFinite(configuredWidth) && configuredWidth > 0
-        ? String(maxBlankWidthUnit ?? 'mm').toLowerCase() === 'cm'
-          ? configuredWidth * 10
-          : configuredWidth
-        : 1400;
-    const minLength = Number(minLengthMm);
-    const minimumLength = Number.isFinite(minLength) && minLength >= 0 ? minLength : 650;
-    // Oba boki większe niż maksymalna szerokość toru — żadna orientacja się nie zmieści,
-    // więc szerokością bierzemy niższą z dwóch wartości (musi być zgodne z serwerem: orientBaselineDimensions).
-    if (first > maxWidth && second > maxWidth) {
-      return first <= second ? { width: first, length: second } : { width: second, length: first };
-    }
-    const candidates = [
-      { width: first, length: second },
-      { width: second, length: first },
-    ].filter((d) => d.width <= maxWidth && d.length >= minimumLength);
-    const selected = candidates.sort((a, b) => b.width - a.width)[0];
-    return selected ?? (first <= maxWidth ? { width: first, length: second } : { width: second, length: first });
-  };
-
-  const handleLengthChange = (rawLength: string) => {
-    const currentWidth = parseNum(form.width_mm);
-    const newLength = parseNum(rawLength);
-    if (currentWidth == null || newLength == null) {
-      setForm((f) => ({ ...f, length_mm: rawLength }));
-      return;
-    }
-    const oriented = orientDimensions(currentWidth, newLength);
-    setForm((f) => ({
-      ...f,
-      width_mm: String(oriented.width),
-      length_mm: String(oriented.length),
-    }));
-  };
 
   const detailOptions = useMemo(
     () =>
@@ -404,9 +409,24 @@ export default function BaselineMaterialsSection({
     </button>
   );
 
+  const changeExternalVolumeUnit = (next: VolumeUnit) => {
+    if (next === volumeUnit) return;
+    setForm((f) => ({
+      ...f,
+      externalVolumes: f.externalVolumes.map((row) => {
+        const current = parseNum(row.weekly_volume);
+        if (current == null) return row;
+        const weekly = volumeToWeekly(current, volumeUnit, workWeeks);
+        return { ...row, weekly_volume: formatVolumeInput(weeklyToVolume(weekly, next, workWeeks)) };
+      }),
+    }));
+    setVolumeUnit(next);
+  };
+
   const openCreate = () => {
     setEditingId(null);
     setForm(EMPTY);
+    setVolumeUnit('weekly');
     setError('');
     setDetailQuery('');
     setPinnedDetailIds([]);
@@ -421,6 +441,7 @@ export default function BaselineMaterialsSection({
       : (row.details ?? []).map((d: any) => Number(d.id));
     setPinnedDetailIds(linkedIds);
     setBulkConsumption('');
+    setVolumeUnit('weekly');
     const useExtVol = Number(row.use_external_volume ?? 0) === 1;
     const formBase: MaterialForm = {
       alias: row.alias ?? '',
@@ -450,12 +471,13 @@ export default function BaselineMaterialsSection({
     if (useExtVol) {
       api.machines.materials.externalVolumes
         .list(machineId, row.id)
-        .then((vols) =>
+        .then((vols) => {
+          setVolumeUnit('weekly');
           setForm((f) => ({
             ...f,
             externalVolumes: vols.map((v) => ({ year: v.year, weekly_volume: String(v.weekly_volume) })),
-          }))
-        )
+          }));
+        })
         .catch((e) => setError(te(e?.message) || 'Błąd ładowania wolumenów'));
     }
   };
@@ -464,6 +486,7 @@ export default function BaselineMaterialsSection({
     setModalOpen(false);
     setEditingId(null);
     setForm(EMPTY);
+    setVolumeUnit('weekly');
     setError('');
     setDetailQuery('');
     setPinnedDetailIds([]);
@@ -543,7 +566,10 @@ export default function BaselineMaterialsSection({
         const savedId = saved?.id ?? editingId;
         if (form.useExternalVolume && savedId != null) {
           const volRows = form.externalVolumes
-            .map((r) => ({ year: Number(r.year), weekly_volume: parseNum(r.weekly_volume) ?? 0 }))
+            .map((r) => {
+              const entered = parseNum(r.weekly_volume) ?? 0;
+              return { year: Number(r.year), weekly_volume: volumeToWeekly(entered, volumeUnit, workWeeks) };
+            })
             .filter((r) => Number.isFinite(r.year) && r.year >= 1900 && r.year <= 2100);
           await api.machines.materials.externalVolumes.save(machineId, savedId, volRows);
         }
@@ -652,6 +678,7 @@ export default function BaselineMaterialsSection({
     <div style={{ background: 'white', padding: '1.5rem', borderRadius: 8, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
         <h2 style={{ margin: 0 }}>{t('machineDetail.tabMaterials')}</h2>
+        {scenarioId == null && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <input
             ref={routingInputRef}
@@ -709,8 +736,11 @@ export default function BaselineMaterialsSection({
             {t('machineDetail.materialsDeleteAll')}
           </button>
         </div>
+        )}
       </div>
-      <p style={{ color: '#666', fontSize: 13, marginTop: 0 }}>{t('machineDetail.materialsHint')}</p>
+      <p style={{ color: '#666', fontSize: 13, marginTop: 0 }}>
+        {scenarioId != null ? t('machineDetail.materialsScenarioHint') : t('machineDetail.materialsHint')}
+      </p>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
         <input
           type="search"
@@ -754,17 +784,21 @@ export default function BaselineMaterialsSection({
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: '#f5f5f5', textAlign: 'left' }}>
-              <th style={{ padding: '0.5rem', width: 36 }}>
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  ref={(el) => {
-                    if (el) el.indeterminate = someSelected;
-                  }}
-                  onChange={toggleSelectAll}
-                  disabled={filteredList.length === 0}
-                  aria-label={t('machineDetail.materialsDeleteAll')}
-                />
+              <th style={{ padding: '0.5rem', width: scenarioId != null ? 88 : 36 }}>
+                {scenarioId != null ? (
+                  t('machineDetail.materialsScenarioActive')
+                ) : (
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someSelected;
+                    }}
+                    onChange={toggleSelectAll}
+                    disabled={filteredList.length === 0}
+                    aria-label={t('machineDetail.materialsDeleteAll')}
+                  />
+                )}
               </th>
               <th style={{ padding: '0.5rem' }}>{renderSortableHeader(t('machineDetail.materialAlias'), 'alias')}</th>
               <th style={{ padding: '0.5rem' }}>{renderSortableHeader(t('machineDetail.materialDescription'), 'description')}</th>
@@ -876,13 +910,29 @@ export default function BaselineMaterialsSection({
               </tr>
             )}
             {sortedList.map((row) => (
-              <tr key={row.id} style={{ borderTop: '1px solid #eee' }}>
-                <td style={{ padding: '0.5rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(Number(row.id))}
-                    onChange={() => toggleSelected(Number(row.id))}
-                  />
+              <tr
+                key={row.id}
+                style={{
+                  borderTop: '1px solid #eee',
+                  opacity: scenarioId != null && Number(row.scenario_active) !== 1 ? 0.55 : 1,
+                }}
+              >
+                <td style={{ padding: '0.5rem', textAlign: 'center' }}>
+                  {scenarioId != null ? (
+                    <input
+                      type="checkbox"
+                      checked={Number(row.scenario_active) === 1}
+                      disabled={materialBusyId === Number(row.id)}
+                      aria-label={t('machineDetail.materialsScenarioActive')}
+                      onChange={(e) => toggleScenarioMaterial(row, e.target.checked)}
+                    />
+                  ) : (
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(Number(row.id))}
+                      onChange={() => toggleSelected(Number(row.id))}
+                    />
+                  )}
                 </td>
                 <td style={{ padding: '0.5rem' }}>{row.alias || t('common.dash')}</td>
                 <td style={{ padding: '0.5rem' }}>{row.description || t('common.dash')}</td>
@@ -937,6 +987,8 @@ export default function BaselineMaterialsSection({
                   })()}
                 </td>
                 <td style={{ padding: '0.5rem', whiteSpace: 'nowrap' }}>
+                  {scenarioId == null && (
+                    <>
                   <button
                     type="button"
                     onClick={() => startEdit(row)}
@@ -951,6 +1003,8 @@ export default function BaselineMaterialsSection({
                   >
                     {t('common.delete')}
                   </button>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -1061,7 +1115,21 @@ export default function BaselineMaterialsSection({
                     <thead>
                       <tr style={{ background: '#f5f5f5' }}>
                         <th style={{ textAlign: 'left', padding: '4px 8px', border: '1px solid #ddd' }}>{t('machineDetail.materialExtVolYear')}</th>
-                        <th style={{ textAlign: 'left', padding: '4px 8px', border: '1px solid #ddd' }}>{t('machineDetail.materialExtVolWeekly')}</th>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', border: '1px solid #ddd' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            {t('machineDetail.materialExtVolWeekly')}
+                            <select
+                              value={volumeUnit}
+                              onChange={(e) => changeExternalVolumeUnit(e.target.value as VolumeUnit)}
+                              aria-label={t('machineDetail.materialExtVolWeekly')}
+                              style={{ padding: '2px 4px', fontSize: 12 }}
+                            >
+                              <option value="weekly">{t('common.unitWeekly')}</option>
+                              <option value="monthly">{t('common.unitMonthly')}</option>
+                              <option value="annual">{t('common.unitAnnual')}</option>
+                            </select>
+                          </span>
+                        </th>
                         <th style={{ padding: '4px 4px', border: '1px solid #ddd', width: 32 }}></th>
                       </tr>
                     </thead>
@@ -1247,7 +1315,7 @@ export default function BaselineMaterialsSection({
               </label>
               <label>
                 {t('machineDetail.materialLength')}
-                <input value={form.length_mm} onChange={(e) => handleLengthChange(e.target.value)} style={inputStyle} />
+                <input value={form.length_mm} onChange={(e) => setForm((f) => ({ ...f, length_mm: e.target.value }))} style={inputStyle} />
               </label>
               <p style={{ margin: '8px 0 0' }}>
                 <strong>{t('machineDetail.materialMass')}</strong> {fmtMass(previewMass.after, t('common.dash'))} kg

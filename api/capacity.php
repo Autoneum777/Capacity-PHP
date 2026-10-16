@@ -822,7 +822,7 @@ function calculator_merge_ops(array $ops, array $extra): array
 function calculator_filtered_machines(PDO $pdo, array $statuses, array $types, ?array $onlyIds): array
 {
     $machines = calculator_machine_rows($pdo, $statuses, $types, $onlyIds);
-    $extraIds = array_keys(calculator_rfq_operations($pdo));
+    $extraIds = array_values(array_unique(array_merge(array_keys(calculator_rfq_operations($pdo)), baseline_rfq_machine_ids($pdo))));
     if ($onlyIds !== null) {
         $extraIds = array_values(array_intersect($extraIds, $onlyIds));
     }

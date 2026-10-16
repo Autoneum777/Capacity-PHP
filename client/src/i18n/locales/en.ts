@@ -758,7 +758,7 @@ export const en: TranslationTree = {
       volumeToMove: 'Volume to transfer:',
       targetPercentPreview: 'Estimated volume to transfer: {{value}} {{unit}}',
       targetPercentInsufficient:
-        'Detail volume is insufficient to reach {{percent}}% load. The full available detail volume will be transferred.',
+        'The combined load of the selected parts cannot leave {{percent}}% on the releasing machine. Change the target or the selected parts.',
       manualExceedsWarning:
         'Entered volume exceeds available detail volume in years: {{years}}. On execute, the maximum possible amount will be transferred (not more than entered).',
       remainingLoad: 'Remaining load on releasing machine: ~{{pct}}%',

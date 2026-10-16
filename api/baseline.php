@@ -171,6 +171,99 @@ function baseline_volume_settings(array $settings, array $machine): array
     return $settings;
 }
 
+function baseline_activated_rfq_operation_ids(): array
+{
+    $raw = trim((string) ($_GET['includeRfqOperationIds'] ?? ''));
+    if ($raw === '') {
+        return [];
+    }
+    $ids = [];
+    foreach (preg_split('/[,;\s]+/', $raw) ?: [] as $part) {
+        if (ctype_digit($part) && (int) $part > 0) {
+            $ids[(int) $part] = (int) $part;
+        }
+    }
+    return array_values($ids);
+}
+
+function baseline_part_operation(int $machineId, array $part, int $designationId): array
+{
+    $partId = (int) $part['part_id'];
+    return [
+        'operation_id' => -($machineId * 1000000000 + $partId),
+        'project_id' => (int) $part['project_id'],
+        'part_id' => $partId,
+        'machine_id' => $machineId,
+        'cycle_time_seconds' => 0,
+        'volume_value' => 0,
+        'volume_unit' => 'annual',
+        'nests_count' => 1,
+        'alt_cycle_time_seconds' => null,
+        'alt_nests_count' => null,
+        'use_alternative_in_calculator' => 0,
+        'split_from_operation_id' => null,
+        'sop' => $part['sop'],
+        'eop' => $part['eop'],
+        'project_status' => $part['project_status'],
+        'project_client' => $part['project_client'],
+        'project_name' => $part['project_name'],
+        'detail_sap_number' => $part['detail_sap_number'],
+        'detail_alias' => $part['detail_alias'],
+        'detail_free_text' => $part['detail_free_text'],
+        'detail_designation' => $part['designation'],
+        'detail_designation_id' => $designationId,
+    ];
+}
+
+function baseline_append_part_ops(array &$ops, array $byDesignation, array $part): void
+{
+    $designationId = (int) $part['designation_id'];
+    if (!isset($byDesignation[$designationId])) {
+        return;
+    }
+    foreach (array_unique($byDesignation[$designationId]) as $machineId) {
+        $operation = baseline_part_operation((int) $machineId, $part, $designationId);
+        $known = false;
+        foreach ($ops[$machineId] ?? [] as $existing) {
+            if ((int) $existing['operation_id'] === (int) $operation['operation_id']) {
+                $known = true;
+                break;
+            }
+        }
+        if (!$known) {
+            $ops[$machineId][] = $operation;
+        }
+    }
+}
+
+/** Maszyny bazowe, które dostaną popyt z zaznaczonych operacji RFQ. */
+function baseline_rfq_machine_ids(PDO $pdo): array
+{
+    $ids = baseline_activated_rfq_operation_ids();
+    if ($ids === []) {
+        return [];
+    }
+    $marks = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare(
+        "SELECT DISTINCT bm.machine_id
+         FROM operations o
+         JOIN parts pt ON pt.id = o.part_id
+         JOIN projects p ON p.id = pt.project_id
+         JOIN machine_baseline_material_parts bmp ON bmp.designation_id = pt.designation_id
+         JOIN machine_baseline_materials bm ON bm.id = bmp.material_id
+         JOIN machines m ON m.id = bm.machine_id
+         WHERE p.status = 'RFQ' AND pt.designation_id IS NOT NULL
+           AND bm.include_in_capacity = 1 AND m.is_baseline = 1
+           AND o.id IN ($marks)"
+    );
+    $stmt->execute($ids);
+    $machineIds = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $machineId) {
+        $machineIds[] = (int) $machineId;
+    }
+    return $machineIds;
+}
+
 function baseline_bundle(PDO $pdo): array
 {
     $materials = [];
@@ -215,45 +308,32 @@ function baseline_bundle(PDO $pdo): array
     }
     $ops = [];
     if ($byDesignation !== []) {
-        foreach ($pdo->query(
-            'SELECT pt.id AS part_id, pt.project_id, pt.designation_id, pt.designation,
+        $partSql = 'SELECT pt.id AS part_id, pt.project_id, pt.designation_id, pt.designation,
                     p.sop, p.eop, p.status AS project_status, p.client AS project_client, p.name AS project_name,
                     pd.sap_number AS detail_sap_number, pd.alias AS detail_alias, pd.free_text AS detail_free_text
              FROM parts pt
              JOIN projects p ON p.id = pt.project_id
              LEFT JOIN part_designations pd ON pd.id = pt.designation_id
-             WHERE p.status = \'active\' AND pt.designation_id IS NOT NULL'
-        ) as $part) {
-            $designationId = (int) $part['designation_id'];
-            if (!isset($byDesignation[$designationId])) {
-                continue;
-            }
-            foreach (array_unique($byDesignation[$designationId]) as $machineId) {
-                $partId = (int) $part['part_id'];
-                $ops[$machineId][] = [
-                    'operation_id' => -($machineId * 1000000000 + $partId),
-                    'project_id' => (int) $part['project_id'],
-                    'part_id' => $partId,
-                    'machine_id' => $machineId,
-                    'cycle_time_seconds' => 0,
-                    'volume_value' => 0,
-                    'volume_unit' => 'annual',
-                    'nests_count' => 1,
-                    'alt_cycle_time_seconds' => null,
-                    'alt_nests_count' => null,
-                    'use_alternative_in_calculator' => 0,
-                    'split_from_operation_id' => null,
-                    'sop' => $part['sop'],
-                    'eop' => $part['eop'],
-                    'project_status' => $part['project_status'],
-                    'project_client' => $part['project_client'],
-                    'project_name' => $part['project_name'],
-                    'detail_sap_number' => $part['detail_sap_number'],
-                    'detail_alias' => $part['detail_alias'],
-                    'detail_free_text' => $part['detail_free_text'],
-                    'detail_designation' => $part['designation'],
-                    'detail_designation_id' => $designationId,
-                ];
+             WHERE p.status = \'active\' AND pt.designation_id IS NOT NULL';
+        foreach ($pdo->query($partSql) as $part) {
+            baseline_append_part_ops($ops, $byDesignation, $part);
+        }
+        $rfqIds = baseline_activated_rfq_operation_ids();
+        if ($rfqIds !== []) {
+            $marks = implode(',', array_fill(0, count($rfqIds), '?'));
+            $rfqStmt = $pdo->prepare(
+                'SELECT DISTINCT pt.id AS part_id, pt.project_id, pt.designation_id, pt.designation,
+                        p.sop, p.eop, p.status AS project_status, p.client AS project_client, p.name AS project_name,
+                        pd.sap_number AS detail_sap_number, pd.alias AS detail_alias, pd.free_text AS detail_free_text
+                 FROM operations o
+                 JOIN parts pt ON pt.id = o.part_id
+                 JOIN projects p ON p.id = pt.project_id
+                 LEFT JOIN part_designations pd ON pd.id = pt.designation_id
+                 WHERE p.status = \'RFQ\' AND pt.designation_id IS NOT NULL AND o.id IN (' . $marks . ')'
+            );
+            $rfqStmt->execute($rfqIds);
+            foreach ($rfqStmt->fetchAll() as $part) {
+                baseline_append_part_ops($ops, $byDesignation, $part);
             }
         }
     }

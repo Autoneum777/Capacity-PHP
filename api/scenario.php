@@ -170,8 +170,76 @@ function scenario_copy_table(PDO $memory, string $table, bool $empty): void
     $memory->exec('CREATE TABLE ' . $table . ' AS SELECT * FROM src.' . $table . $where);
 }
 
+function scenario_material_is_active(array $row): bool
+{
+    if (!array_key_exists('scenario_active', $row)) {
+        return true;
+    }
+    return (int) $row['scenario_active'] !== 0;
+}
+
+function scenario_freeze_legacy_baseline_materials(PDO $pdo): void
+{
+    $pending = $pdo->query(
+        'SELECT id, snapshot FROM scenarios WHERE instr(snapshot, \'"baseline_materials_frozen":true\') = 0'
+    )->fetchAll();
+    if ($pending === []) {
+        return;
+    }
+    $materials = $pdo->query('SELECT * FROM machine_baseline_materials')->fetchAll();
+    foreach ($materials as &$material) {
+        $material['scenario_active'] = 1;
+    }
+    unset($material);
+    $parts = $pdo->query('SELECT * FROM machine_baseline_material_parts')->fetchAll();
+    $volumes = $pdo->query('SELECT * FROM machine_baseline_material_volumes')->fetchAll();
+    foreach ($pending as $row) {
+        $bundle = json_decode((string) $row['snapshot'], true);
+        if (!is_array($bundle) || !empty($bundle['baseline_materials_frozen'])) {
+            continue;
+        }
+        $bundle['machine_baseline_materials'] = $materials;
+        $bundle['machine_baseline_material_parts'] = $parts;
+        $bundle['machine_baseline_material_volumes'] = $volumes;
+        $bundle['baseline_materials_frozen'] = true;
+        scenario_save($pdo, (int) $row['id'], $bundle);
+    }
+}
+
+function scenario_install_baseline_materials(PDO $memory, array $bundle, bool $includeInactive): void
+{
+    $materials = [];
+    $ids = [];
+    foreach ($bundle['machine_baseline_materials'] ?? [] as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        if (!$includeInactive && !scenario_material_is_active($row)) {
+            continue;
+        }
+        $materials[] = $row;
+        $ids[(int) ($row['id'] ?? 0)] = true;
+    }
+    scenario_insert_rows($memory, 'machine_baseline_materials', $materials);
+    $parts = [];
+    foreach ($bundle['machine_baseline_material_parts'] ?? [] as $row) {
+        if (is_array($row) && isset($ids[(int) ($row['material_id'] ?? 0)])) {
+            $parts[] = $row;
+        }
+    }
+    scenario_insert_rows($memory, 'machine_baseline_material_parts', $parts);
+    $volumes = [];
+    foreach ($bundle['machine_baseline_material_volumes'] ?? [] as $row) {
+        if (is_array($row) && isset($ids[(int) ($row['material_id'] ?? 0)])) {
+            $volumes[] = $row;
+        }
+    }
+    scenario_insert_rows($memory, 'machine_baseline_material_volumes', $volumes);
+}
+
 function scenario_calculator_database(PDO $pdo, int $id): ?PDO
 {
+    scenario_freeze_legacy_baseline_materials($pdo);
     $auth = require_permission($pdo, 'scenarios.view');
     if (scenario_hidden($pdo, $auth, $id)) {
         return null;
@@ -190,7 +258,6 @@ function scenario_calculator_database(PDO $pdo, int $id): ?PDO
     $memory->exec('ATTACH DATABASE ' . $memory->quote($path) . ' AS src');
     foreach ([
         'machines', 'process_phases', 'part_designations', 'admin_settings', 'working_days',
-        'machine_baseline_materials', 'machine_baseline_material_parts', 'machine_baseline_material_volumes',
         'nest_machines', 'machine_alternatives',
     ] as $table) {
         scenario_copy_table($memory, $table, false);
@@ -200,6 +267,7 @@ function scenario_calculator_database(PDO $pdo, int $id): ?PDO
         'part_volume_by_year', 'part_volume_contract_by_year', 'part_volume_share_by_year',
         'part_volume_contract_share_by_year', 'operation_volume_by_year', 'operation_set_members',
         'project_eop_extensions',
+        'machine_baseline_materials', 'machine_baseline_material_parts', 'machine_baseline_material_volumes',
     ] as $table) {
         scenario_copy_table($memory, $table, true);
     }
@@ -232,6 +300,7 @@ function scenario_calculator_database(PDO $pdo, int $id): ?PDO
     ] as $table) {
         scenario_insert_rows($memory, $table, $bundle[$table]);
     }
+    scenario_install_baseline_materials($memory, $bundle, false);
     $ids = array_keys(array_filter($projectIds));
     if ($ids !== []) {
         $memory->exec('UPDATE projects SET status = \'active\' WHERE id IN (' . implode(',', array_map('intval', $ids)) . ')');
@@ -265,6 +334,15 @@ function scenario_export_live(PDO $pdo): array
     }
     $bundle['machine_locations'] = $pdo->query('SELECT id AS machine_id, location FROM machines')->fetchAll();
     $bundle['machine_statuses'] = $pdo->query('SELECT id AS machine_id, status FROM machines')->fetchAll();
+    $materials = $pdo->query('SELECT * FROM machine_baseline_materials')->fetchAll();
+    foreach ($materials as &$material) {
+        $material['scenario_active'] = 1;
+    }
+    unset($material);
+    $bundle['machine_baseline_materials'] = $materials;
+    $bundle['machine_baseline_material_parts'] = $pdo->query('SELECT * FROM machine_baseline_material_parts')->fetchAll();
+    $bundle['machine_baseline_material_volumes'] = $pdo->query('SELECT * FROM machine_baseline_material_volumes')->fetchAll();
+    $bundle['baseline_materials_frozen'] = true;
     $bundle['audit_log'] = [];
     $bundle['allocation_moves'] = [];
     $bundle['volume_edits'] = [];
@@ -290,6 +368,7 @@ function scenario_public_row(array $row): array
 
 function scenario_list(PDO $pdo): void
 {
+    scenario_freeze_legacy_baseline_materials($pdo);
     $auth = require_permission($pdo, 'scenarios.view');
     $archived = ($_GET['archived'] ?? '') === '1' || strtolower((string) ($_GET['archived'] ?? '')) === 'true';
     $sql = 'SELECT s.*, ps.name AS source_scenario_name, co.name AS source_call_off_name
@@ -325,6 +404,7 @@ function scenario_get(PDO $pdo, int $id): void
 
 function scenario_create(PDO $pdo): void
 {
+    scenario_freeze_legacy_baseline_materials($pdo);
     $auth = require_permission($pdo, 'scenarios.edit');
     $body = request_json();
     $name = trim((string) ($body['name'] ?? ''));
@@ -630,7 +710,61 @@ function scenario_addable(PDO $pdo, int $id): void
         $project['id'] = (int) $project['id'];
         $rows[] = $project;
     }
+    $materialsByProject = scenario_baseline_materials_by_project($pdo, array_map(fn(array $project): int => (int) $project['id'], $rows));
+    foreach ($rows as &$project) {
+        $project['baseline_materials'] = $materialsByProject[(int) $project['id']] ?? [];
+    }
+    unset($project);
     json_response(200, $rows);
+}
+
+function scenario_baseline_materials_by_project(PDO $pdo, array $projectIds): array
+{
+    $projectIds = array_values(array_unique(array_filter(array_map('intval', $projectIds), fn(int $id): bool => $id > 0)));
+    if ($projectIds === []) {
+        return [];
+    }
+    $marks = implode(',', array_fill(0, count($projectIds), '?'));
+    $stmt = $pdo->prepare(
+        "SELECT DISTINCT p.id AS project_id, bm.id AS material_id, bm.alias, bm.sap_number, bm.machine_id, m.internal_number
+         FROM projects p
+         JOIN parts pt ON pt.project_id = p.id
+         JOIN machine_baseline_material_parts bmp ON bmp.designation_id = pt.designation_id
+         JOIN machine_baseline_materials bm ON bm.id = bmp.material_id
+         JOIN machines m ON m.id = bm.machine_id
+         WHERE p.id IN ($marks) AND pt.designation_id IS NOT NULL AND m.is_baseline = 1"
+    );
+    $stmt->execute($projectIds);
+    $grouped = [];
+    foreach ($stmt as $row) {
+        $projectId = (int) $row['project_id'];
+        $grouped[$projectId][] = [
+            'id' => (int) $row['material_id'],
+            'alias' => $row['alias'],
+            'sap_number' => $row['sap_number'],
+            'machine_id' => (int) $row['machine_id'],
+            'internal_number' => $row['internal_number'],
+        ];
+    }
+    return $grouped;
+}
+
+function scenario_set_baseline_material_active(PDO $pdo, array &$bundle, int $materialId, bool $active): bool
+{
+    if (!isset($bundle['machine_baseline_materials']) || !is_array($bundle['machine_baseline_materials'])) {
+        $bundle['machine_baseline_materials'] = [];
+    }
+    foreach ($bundle['machine_baseline_materials'] as $index => $material) {
+        if ((int) ($material['id'] ?? 0) !== $materialId) {
+            continue;
+        }
+        $bundle['machine_baseline_materials'][$index]['scenario_active'] = $active ? 1 : 0;
+        return true;
+    }
+    if (!$active) {
+        return false;
+    }
+    return scenario_copy_baseline_material($pdo, $bundle, $materialId);
 }
 
 function scenario_copy_project(PDO $pdo, array &$bundle, int $projectId): bool
@@ -715,9 +849,21 @@ function scenario_copy_project(PDO $pdo, array &$bundle, int $projectId): bool
 
 function scenario_add_projects(PDO $pdo, int $id): void
 {
+    $before = scenario_require_editable($pdo, $id);
+    $wasFrozen = !empty($before['bundle']['baseline_materials_frozen']);
+    $materialsBefore = [];
+    foreach ($before['bundle']['machine_baseline_materials'] ?? [] as $material) {
+        if (is_array($material)) {
+            $materialsBefore[(int) ($material['id'] ?? 0)] = scenario_material_is_active($material);
+        }
+    }
+    scenario_freeze_legacy_baseline_materials($pdo);
     $opened = scenario_require_editable($pdo, $id);
     $body = request_json();
     $bundle = $opened['bundle'];
+    $activateMaterials = ($body['activateBaselineMaterials'] ?? false) === true
+        || ($body['activateBaselineMaterials'] ?? null) === 1
+        || ($body['activateBaselineMaterials'] ?? null) === '1';
     $added = [];
     $skipped = [];
     $missing = [];
@@ -737,8 +883,43 @@ function scenario_add_projects(PDO $pdo, int $id): void
             $missing[] = $projectId;
         }
     }
+    $activatedMaterials = [];
     if ($added !== []) {
-        scenario_audit($bundle, user_login_label($opened['auth']['user']), 'Scenariusz: dodano projekty ' . implode(', ', $added));
+        $linked = scenario_baseline_materials_by_project($pdo, $added);
+        $materialIds = [];
+        foreach ($added as $projectId) {
+            $status = '';
+            foreach ($bundle['projects'] as $project) {
+                if ((int) ($project['id'] ?? 0) === $projectId) {
+                    $status = (string) ($project['status'] ?? '');
+                    break;
+                }
+            }
+            if (strtoupper($status) !== 'RFQ') {
+                continue;
+            }
+            foreach ($linked[$projectId] ?? [] as $material) {
+                $materialIds[(int) $material['id']] = true;
+            }
+        }
+        foreach (array_keys($materialIds) as $materialId) {
+            $materialId = (int) $materialId;
+            if ($activateMaterials) {
+                if (scenario_set_baseline_material_active($pdo, $bundle, $materialId, true)) {
+                    $activatedMaterials[] = $materialId;
+                }
+                continue;
+            }
+            if (!$wasFrozen && !isset($materialsBefore[$materialId])) {
+                scenario_set_baseline_material_active($pdo, $bundle, $materialId, false);
+            }
+        }
+        $note = 'Scenariusz: dodano projekty ' . implode(', ', $added);
+        if ($activatedMaterials !== []) {
+            $note .= '. Włączono materiały linii bazowej ' . implode(', ', $activatedMaterials);
+            $bundle['baseline_materials_frozen'] = true;
+        }
+        scenario_audit($bundle, user_login_label($opened['auth']['user']), $note);
         scenario_save($pdo, $id, $bundle);
     }
     json_response(200, [
@@ -746,6 +927,7 @@ function scenario_add_projects(PDO $pdo, int $id): void
         'addedProjectIds' => $added,
         'skippedAlreadyInBundle' => $skipped,
         'notFoundInProduction' => $missing,
+        'activatedBaselineMaterialIds' => $activatedMaterials,
     ]);
 }
 
@@ -1536,6 +1718,180 @@ function scenario_update(PDO $pdo, int $id): void
     json_response(200, scenario_public_row($row));
 }
 
+function scenario_material_memory(PDO $pdo): PDO
+{
+    $memory = new PDO('sqlite::memory:');
+    $memory->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $memory->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $memory->exec('PRAGMA foreign_keys = OFF');
+    $path = str_replace('\\', '/', database_path());
+    $memory->exec('ATTACH DATABASE ' . $memory->quote($path) . ' AS src');
+    foreach (['machines', 'part_designations', 'admin_settings'] as $table) {
+        scenario_copy_table($memory, $table, false);
+    }
+    foreach (['machine_baseline_materials', 'machine_baseline_material_parts', 'machine_baseline_material_volumes'] as $table) {
+        scenario_copy_table($memory, $table, true);
+    }
+    $memory->exec('DETACH DATABASE src');
+    return $memory;
+}
+
+function scenario_copy_baseline_material(PDO $pdo, array &$bundle, int $materialId): bool
+{
+    foreach ($bundle['machine_baseline_materials'] ?? [] as $row) {
+        if ((int) ($row['id'] ?? 0) === $materialId) {
+            return false;
+        }
+    }
+    $stmt = $pdo->prepare('SELECT * FROM machine_baseline_materials WHERE id = ?');
+    $stmt->execute([$materialId]);
+    $material = $stmt->fetch();
+    if (!$material) {
+        return false;
+    }
+    $material['scenario_active'] = 1;
+    $bundle['machine_baseline_materials'][] = $material;
+    $parts = $pdo->prepare('SELECT * FROM machine_baseline_material_parts WHERE material_id = ?');
+    $parts->execute([$materialId]);
+    foreach ($parts as $part) {
+        $bundle['machine_baseline_material_parts'][] = $part;
+    }
+    $volumes = $pdo->prepare('SELECT * FROM machine_baseline_material_volumes WHERE material_id = ?');
+    $volumes->execute([$materialId]);
+    foreach ($volumes as $volume) {
+        $bundle['machine_baseline_material_volumes'][] = $volume;
+    }
+    return true;
+}
+
+function scenario_baseline_materials(PDO $pdo, int $id, int $machineId): void
+{
+    scenario_freeze_legacy_baseline_materials($pdo);
+    $auth = require_permission($pdo, 'scenarios.view');
+    if (scenario_hidden($pdo, $auth, $id)) {
+        json_response(404, ['error' => 'Scenariusz nie znaleziony']);
+    }
+    $row = scenario_row($pdo, $id);
+    if (!$row) {
+        json_response(404, ['error' => 'Not found']);
+    }
+    $bundle = scenario_decode((string) $row['snapshot']);
+    $known = [];
+    $subset = [
+        'machine_baseline_materials' => [],
+        'machine_baseline_material_parts' => [],
+        'machine_baseline_material_volumes' => [],
+    ];
+    foreach ($bundle['machine_baseline_materials'] ?? [] as $material) {
+        if ((int) ($material['machine_id'] ?? 0) !== $machineId) {
+            continue;
+        }
+        $materialId = (int) ($material['id'] ?? 0);
+        $known[$materialId] = scenario_material_is_active($material);
+        $subset['machine_baseline_materials'][] = $material;
+    }
+    $materialIds = array_fill_keys(array_keys($known), true);
+    foreach ($bundle['machine_baseline_material_parts'] ?? [] as $part) {
+        if (isset($materialIds[(int) ($part['material_id'] ?? 0)])) {
+            $subset['machine_baseline_material_parts'][] = $part;
+        }
+    }
+    foreach ($bundle['machine_baseline_material_volumes'] ?? [] as $volume) {
+        if (isset($materialIds[(int) ($volume['material_id'] ?? 0)])) {
+            $subset['machine_baseline_material_volumes'][] = $volume;
+        }
+    }
+    $rows = [];
+    if ($subset['machine_baseline_materials'] !== []) {
+        $memory = scenario_material_memory($pdo);
+        scenario_install_baseline_materials($memory, $subset, true);
+        $snapshotRows = machine_materials($memory, $machineId);
+        if ($snapshotRows === null) {
+            json_response(404, ['error' => 'Not found']);
+        }
+        if (isset($snapshotRows['error'])) {
+            json_response(400, $snapshotRows);
+        }
+        foreach ($snapshotRows as $material) {
+            $material['scenario_active'] = !empty($known[(int) $material['id']]) ? 1 : 0;
+            $rows[] = $material;
+        }
+    }
+    $live = machine_materials($pdo, $machineId);
+    if ($live === null) {
+        json_response(404, ['error' => 'Not found']);
+    }
+    if (isset($live['error'])) {
+        json_response(400, $live);
+    }
+    foreach ($live as $material) {
+        if (isset($known[(int) $material['id']])) {
+            continue;
+        }
+        $material['scenario_active'] = 0;
+        $rows[] = $material;
+    }
+    usort($rows, fn(array $a, array $b): int => (int) $a['id'] <=> (int) $b['id']);
+    json_response(200, $rows);
+}
+
+function scenario_set_baseline_material(PDO $pdo, int $id, int $machineId, int $materialId): void
+{
+    $opened = scenario_require_editable($pdo, $id);
+    scenario_freeze_legacy_baseline_materials($pdo);
+    $opened['bundle'] = scenario_decode((string) scenario_row($pdo, $id)['snapshot']);
+    $body = request_json();
+    $active = ($body['active'] ?? false) === true || ($body['active'] ?? null) === 1 || ($body['active'] ?? null) === '1';
+    $bundle = &$opened['bundle'];
+    if (!isset($bundle['machine_baseline_materials']) || !is_array($bundle['machine_baseline_materials'])) {
+        $bundle['machine_baseline_materials'] = [];
+    }
+    if (!isset($bundle['machine_baseline_material_parts']) || !is_array($bundle['machine_baseline_material_parts'])) {
+        $bundle['machine_baseline_material_parts'] = [];
+    }
+    if (!isset($bundle['machine_baseline_material_volumes']) || !is_array($bundle['machine_baseline_material_volumes'])) {
+        $bundle['machine_baseline_material_volumes'] = [];
+    }
+    $index = -1;
+    foreach ($bundle['machine_baseline_materials'] as $i => $material) {
+        if ((int) ($material['id'] ?? 0) === $materialId) {
+            $index = $i;
+            break;
+        }
+    }
+    if ($index >= 0 && (int) ($bundle['machine_baseline_materials'][$index]['machine_id'] ?? 0) !== $machineId) {
+        json_response(404, ['error' => 'Not found']);
+    }
+    if ($active) {
+        if ($index >= 0) {
+            $bundle['machine_baseline_materials'][$index]['scenario_active'] = 1;
+        } else {
+            $owner = $pdo->prepare('SELECT machine_id FROM machine_baseline_materials WHERE id = ?');
+            $owner->execute([$materialId]);
+            $ownerRow = $owner->fetch();
+            if (!$ownerRow || (int) $ownerRow['machine_id'] !== $machineId || !scenario_copy_baseline_material($pdo, $bundle, $materialId)) {
+                json_response(404, ['error' => 'Not found']);
+            }
+        }
+    } elseif ($index < 0) {
+        json_response(200, ['id' => $materialId, 'scenario_active' => 0]);
+    } else {
+        $bundle['machine_baseline_materials'][$index]['scenario_active'] = 0;
+    }
+    $bundle['baseline_materials_frozen'] = true;
+    $label = $active ? 'włączony' : 'wyłączony';
+    scenario_audit(
+        $bundle,
+        user_login_label($opened['auth']['user']),
+        'Scenariusz: materiał linii bazowej #' . $materialId . ' ' . $label,
+        null,
+        null,
+        $machineId
+    );
+    scenario_save($pdo, $id, $bundle);
+    json_response(200, ['id' => $materialId, 'scenario_active' => $active ? 1 : 0]);
+}
+
 function handle_scenarios(string $method, string $path): bool
 {
     if (!str_starts_with($path, '/scenarios')) {
@@ -1617,6 +1973,12 @@ function handle_scenarios(string $method, string $path): bool
         }
         if ($method === 'PATCH' && preg_match('#^machines/(\d+)/status$#', $rest, $item) === 1) {
             scenario_patch_machine($pdo, $id, (int) $item[1], 'status');
+        }
+        if ($method === 'GET' && preg_match('#^machines/(\d+)/baseline-materials$#', $rest, $item) === 1) {
+            scenario_baseline_materials($pdo, $id, (int) $item[1]);
+        }
+        if ($method === 'PATCH' && preg_match('#^machines/(\d+)/baseline-materials/(\d+)$#', $rest, $item) === 1) {
+            scenario_set_baseline_material($pdo, $id, (int) $item[1], (int) $item[2]);
         }
     }
     return false;

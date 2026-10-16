@@ -760,7 +760,7 @@ export const pl: TranslationTree = {
       volumeToMove: 'Wolumen do przeniesienia:',
       targetPercentPreview: 'Szacowany wolumen do przeniesienia: {{value}} {{unit}}',
       targetPercentInsufficient:
-        'Wolumen detalu nie wystarcza, aby osiągnąć {{percent}}% obciążenia. Zostanie przeniesiona całość dostępnego wolumenu detalu.',
+        'Łączne obciążenie wybranych detali nie pozwala pozostawić {{percent}}% na zwalnianej maszynie. Zmień wartość docelową albo wybór detali.',
       manualExceedsWarning:
         'Wpisany wolumen przekracza dostępny wolumen detalu w latach: {{years}}. Przy wykonaniu alokacji zostanie przeniesiona maksymalna możliwa ilość (nie więcej niż wpisana).',
       remainingLoad: 'Zostaje obciążenie zwalnianej maszyny: ~{{pct}}%',

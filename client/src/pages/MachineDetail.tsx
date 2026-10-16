@@ -200,9 +200,8 @@ export default function MachineDetail() {
         {tab === 'materialy' && isBaselineMachine && (
           <BaselineMaterialsSection
             machineId={machine.id}
-            maxBlankWidthMm={machine.baseline_max_blank_width_mm}
-            maxBlankWidthUnit={machine.baseline_max_blank_width_unit}
-            minLengthMm={machine.baseline_min_length_mm}
+            weeksPerYear={machine.baseline_weeks_per_year}
+            scenarioId={scenarioIdFromUrl}
           />
         )}
         {tab === 'projekty' && !isBaselineMachine && (

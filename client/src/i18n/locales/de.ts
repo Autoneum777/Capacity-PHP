@@ -759,7 +759,7 @@ export const de: TranslationTree = {
       volumeToMove: 'Zu verschiebendes Volumen:',
       targetPercentPreview: 'Geschätztes zu verschiebendes Volumen: {{value}} {{unit}}',
       targetPercentInsufficient:
-        'Detailvolumen reicht nicht für {{percent}} % Auslastung. Das gesamte verfügbare Detailvolumen wird verschoben.',
+        'Die gemeinsame Auslastung der gewählten Teile kann {{percent}} % auf der freigebenden Maschine nicht belassen. Zielwert oder Teileauswahl ändern.',
       manualExceedsWarning:
         'Eingegebenes Volumen überschreitet verfügbares Detailvolumen in Jahren: {{years}}. Bei Ausführung wird maximal mögliches Volumen verschoben (nicht mehr als eingegeben).',
       remainingLoad: 'Verbleibende Auslastung freigebende Maschine: ~{{pct}}%',

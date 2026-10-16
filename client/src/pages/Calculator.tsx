@@ -67,6 +67,13 @@ function calendarYear(): number {
   return new Date().getFullYear();
 }
 
+/** Numer maszyny z linią z bieżącego kalkulatora (produkcja, scenariusz albo call off). */
+function calculatorMachineNumberLabel(internalNumber: unknown, location: unknown): string {
+  const number = internalNumber != null && String(internalNumber).trim() !== '' ? String(internalNumber) : '-';
+  const line = String(location ?? '').trim();
+  return line !== '' ? `${number} (L${line})` : `${number} (—)`;
+}
+
 /** Domyślny zakres lat w Call off: pierwszy rok z importu SAP + kolejny rok. */
 function resolveCallOffDefaultYearRange(row: {
   date_from: string;
@@ -1400,8 +1407,8 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
       if (statuses) params.machineStatuses = statuses;
       if (settingsProfile === 'ocu') params.settingsProfile = 'ocu';
       if (groupFilter.length > 0) params.groupIds = groupFilter.join(',');
-      // RFQ operations included in capacity
-      if (rfqFilterEnabled && rfqSelectedOpIds.length > 0) {
+      // RFQ operations included in capacity. W scenariuszu filtr jest ukryty.
+      if (!scenarioActive && rfqFilterEnabled && rfqSelectedOpIds.length > 0) {
         params.includeRfqOperationIds = rfqSelectedOpIds.join(',');
       }
       // Wymiary filtrujemy po stronie klienta (natychmiastowo) — nie wysyłamy ich do API,
@@ -1416,6 +1423,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
       machineStatusFilter,
       groupFilter,
       scenarioId,
+      scenarioActive,
       useContractualVolumes,
       settingsProfile,
       rfqFilterEnabled,
@@ -1939,7 +1947,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
       return sum / years.length;
     })?.count ?? filteredMachines.length;
   const pinnedSapWidth = 156;
-  const pinnedNumberWidth = 143;
+  const pinnedNumberWidth = 210;
   const pinnedTypeWidth = 94;
   const detailsColWidth = 210;
   const yearColMinWidth = 56;
@@ -3086,7 +3094,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
           {t('calculator.machineGroups')}{' '}
           <MachineGroupsMultiFilter className="cap-filter-select" groups={machineGroups} selected={groupFilter} onChange={setGroupFilter} />
         </label>
-        {!callOffMode && (
+        {!callOffMode && !scenarioActive && (
           <RfqFilterDropdown
             enabled={rfqFilterEnabled}
             onEnabledChange={setRfqFilterEnabled}
@@ -3335,9 +3343,11 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
             </button>
           </div>
           <div>
-            {overloaded.map((m) => (
+            {overloaded.map((m) => {
+              const source = (data?.machines ?? []).find((row: { machine_id?: number }) => Number(row.machine_id) === Number(m.machine_id));
+              return (
               <span key={m.machine_id} style={{ marginRight: 8, display: 'inline-block', marginBottom: 4 }}>
-                {m.internal_number} ({m.load_percent}%)
+                {calculatorMachineNumberLabel(m.internal_number, source?.location)} ({m.load_percent}%)
                 <button
                   type="button"
                   disabled={!canAllocate}
@@ -3345,7 +3355,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                     if (!canAllocate) return;
                     setAllocationModal({
                       machineId: m.machine_id,
-                      internal_number: m.internal_number,
+                      internal_number: calculatorMachineNumberLabel(m.internal_number, source?.location),
                       preselectedYear: m.year,
                       calculatorYears: data?.machines?.find((x: any) => Number(x.machine_id) === Number(m.machine_id))
                         ?.years,
@@ -3358,7 +3368,8 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                   {t('calculator.transferVolume')}
                 </button>
               </span>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -3384,6 +3395,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
             {displayedMachines.map((m: any) => {
               const inScenarioCalc = scenarioId != null && Number.isFinite(scenarioId) && scenarioId > 0;
               const machineRowIsRfq = inScenarioCalc && machineStatusFromDb(m.machine_status) === 'RFQ';
+              const machineNumberLabel = calculatorMachineNumberLabel(m.internal_number, m.location);
               return (
               <Fragment key={m.machine_id}>
               <tr>
@@ -3394,7 +3406,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                   {m.sap_number ?? '-'}
                 </td>
                 <td
-                  title={String(m.internal_number ?? '-')}
+                  title={machineNumberLabel}
                   style={{
                     width: pinnedNumberWidth,
                     minWidth: pinnedNumberWidth,
@@ -3408,7 +3420,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                     textOverflow: 'ellipsis',
                   }}
                 >
-                  <span>{m.internal_number ?? '-'}</span>
+                  <span>{machineNumberLabel}</span>
                   {!isHorizontalExpansion &&
                     renderPeriodExpandBtn(
                       expandedMachines.has(m.machine_id) ? t('calculator.collapseRow') : t('calculator.expandRow'),
@@ -3509,7 +3521,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                     if (!canAllocPeriod && !(tableCanAllocate && isYearCell)) return;
                     setAllocationModal({
                       machineId: m.machine_id,
-                      internal_number: m.internal_number,
+                      internal_number: machineNumberLabel,
                       preselectedYear: yearForCell,
                       preselectedMonth: col.kind === 'month' || col.kind === 'week' ? col.month : undefined,
                       preselectedWeek: col.kind === 'week' ? col.week : undefined,
@@ -3619,7 +3631,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                       if (!canAllocate) return;
                       setAllocationModal({
                         machineId: m.machine_id,
-                        internal_number: m.internal_number,
+                        internal_number: machineNumberLabel,
                         calculatorYears: m.years,
                       });
                     }}
@@ -3735,7 +3747,7 @@ export default function Calculator({ callOffComparisonId }: CalculatorProps = {}
                           if (!tableCanAllocate) return;
                           setAllocationModal({
                             machineId: m.machine_id,
-                            internal_number: m.internal_number,
+                            internal_number: machineNumberLabel,
                             preselectedYear: y,
                             preselectedMonth: row.month,
                             preselectedWeek: row.kind === 'week' ? row.week : undefined,
@@ -4040,6 +4052,12 @@ type AllocationLoadHint = {
   weekly_volume_effective: number;
   working_weeks_per_year: number;
   year_fraction: number;
+  operation_contributions?: {
+    operation_id: number;
+    weekly_volume_effective: number;
+    required_seconds: number;
+    load_percent: number;
+  }[];
 };
 
 function operationLoadPercentOfMachine(
@@ -4059,10 +4077,15 @@ function applyCalculatorMachineLoadPercent(
   if (machineLoadPercent == null || !Number.isFinite(machineLoadPercent)) return hint;
   const current = Math.round(machineLoadPercent);
   if (current === hint.current_load_percent) return hint;
+  const scale = hint.current_load_percent > 1e-9 ? current / hint.current_load_percent : 1;
   return {
     ...hint,
     current_load_percent: current,
     op_load_percent: operationLoadPercentOfMachine(hint.load_ratio_sum, hint.op_ratio_contrib, current),
+    operation_contributions: hint.operation_contributions?.map((row) => ({
+      ...row,
+      load_percent: row.load_percent * scale,
+    })),
   };
 }
 
@@ -4119,8 +4142,9 @@ function buildTargetPercentHint(params: {
   >;
   year: number;
   apiHint: AllocationLoadHint | null;
+  preferApiGroupLoad?: boolean;
 }): AllocationLoadHint | null {
-  const { machineLoadPercent, groupWeeklyMovable, selectedOp, calculatorYears, year, apiHint } = params;
+  const { machineLoadPercent, groupWeeklyMovable, selectedOp, calculatorYears, year, apiHint, preferApiGroupLoad } = params;
   const machineLoad =
     machineLoadPercent ??
     calculatorLoadPercentForYear(calculatorYears, year) ??
@@ -4130,7 +4154,9 @@ function buildTargetPercentHint(params: {
 
   const detailContrib = detailContributionForOperation(calculatorYears, year, selectedOp);
   const opLoad =
-    detailContrib != null && Number.isFinite(detailContrib) && detailContrib > 1e-9
+    preferApiGroupLoad && apiHint != null && apiHint.op_load_percent > 1e-9
+      ? apiHint.op_load_percent
+      : detailContrib != null && Number.isFinite(detailContrib) && detailContrib > 1e-9
       ? detailContrib
       : apiHint != null && apiHint.op_load_percent > 1e-9
         ? apiHint.op_load_percent
@@ -4154,6 +4180,7 @@ function buildTargetPercentHint(params: {
     weekly_volume_effective: groupWeeklyMovable,
     working_weeks_per_year: apiHint?.working_weeks_per_year ?? 48,
     year_fraction: apiHint?.year_fraction != null && apiHint.year_fraction > 1e-12 ? apiHint.year_fraction : 1,
+    operation_contributions: apiHint?.operation_contributions,
   };
 }
 
@@ -4362,6 +4389,10 @@ type GroupedOperation = {
   displayUnit: VolumeUnit;
 };
 
+function allocationOperationGroupKey(op: any): string {
+  return `${op?.project_id ?? ''}:${op?.part_id ?? ''}:${op?.phase_id ?? ''}`;
+}
+
 function isZeroVolumePreallocEligible(op: any, yearItem: number, weeklyOf: (op: any) => number): boolean {
   if (!op || weeklyOf(op) > 1e-9) return false;
   return isYearInProjectSopEop(op.sop ?? '', op.eop ?? '', yearItem);
@@ -4378,17 +4409,110 @@ function buildAllocationContributors(
   groupOps: any[],
   repOpId: number,
   yearItem: number,
-  weeklyOf: (op: any) => number
+  weeklyOf: (op: any) => number,
+  preferredGroupKeys?: string[]
 ): { id: number; weekly: number }[] {
   const repOp = groupOps.find((o: any) => Number(o.id) === Number(repOpId)) ?? groupOps[0];
   const totalWeekly = groupOps.reduce((sum: number, o: any) => sum + Math.max(0, weeklyOf(o)), 0);
   if (totalWeekly <= 1e-9 && repOp && isZeroVolumePreallocEligible(repOp, yearItem, weeklyOf)) {
     return [{ id: Number(repOp.id), weekly: 0 }];
   }
-  return groupOps
+  const rows = groupOps
     .map((o: any) => ({ id: Number(o.id), weekly: Math.max(0, weeklyOf(o)) }))
     .filter((o) => o.weekly > 1e-9)
     .sort((a, b) => b.weekly - a.weekly);
+  if (!preferredGroupKeys?.length) return rows;
+
+  const rank = new Map(preferredGroupKeys.map((key, index) => [key, index]));
+  const opById = new Map(groupOps.map((op: any) => [Number(op.id), op]));
+  return rows
+    .filter((row) => rank.has(allocationOperationGroupKey(opById.get(row.id))))
+    .sort((a, b) => {
+      const rankA = rank.get(allocationOperationGroupKey(opById.get(a.id))) ?? Number.MAX_SAFE_INTEGER;
+      const rankB = rank.get(allocationOperationGroupKey(opById.get(b.id))) ?? Number.MAX_SAFE_INTEGER;
+      return rankA - rankB || b.weekly - a.weekly;
+    });
+}
+
+type TargetPercentGroupPlan = {
+  fullGroupKeys: string[];
+  partialGroupKey: string | null;
+  orderedGroupKeys: string[];
+  moveWeekly: number;
+  insufficient: boolean;
+};
+
+/**
+ * Plan dla wielu referencji: pełne detale najpierw, a ewentualny podział
+ * wyłącznie na detalu o największym wolumenie w pierwszym wybranym roku.
+ */
+function buildTargetPercentGroupPlan(
+  groupOps: any[],
+  hint: AllocationLoadHint,
+  targetPercent: number,
+  weeklyOf: (op: any) => number,
+  fixed?: Pick<TargetPercentGroupPlan, 'fullGroupKeys' | 'partialGroupKey'>
+): TargetPercentGroupPlan {
+  const contributionByOp = new Map(
+    (hint.operation_contributions ?? []).map((row) => [Number(row.operation_id), Number(row.load_percent) || 0])
+  );
+  const groups = new Map<string, { key: string; weekly: number; load: number }>();
+  for (const op of groupOps) {
+    const key = allocationOperationGroupKey(op);
+    const row = groups.get(key) ?? { key, weekly: 0, load: 0 };
+    row.weekly += Math.max(0, weeklyOf(op));
+    row.load += Math.max(0, contributionByOp.get(Number(op.id)) ?? 0);
+    groups.set(key, row);
+  }
+  const rows = Array.from(groups.values()).filter((row) => row.weekly > 1e-9);
+  const totalWeekly = rows.reduce((sum, row) => sum + row.weekly, 0);
+  const totalLoad = rows.reduce((sum, row) => sum + row.load, 0);
+  if (totalLoad <= 1e-9 && totalWeekly > 1e-9) {
+    for (const row of rows) row.load = hint.op_load_percent * (row.weekly / totalWeekly);
+  }
+
+  const desiredLoad = Math.max(0, hint.current_load_percent - targetPercent);
+  const largest = [...rows].sort((a, b) => b.weekly - a.weekly || a.key.localeCompare(b.key))[0];
+  let fullGroupKeys: string[];
+  let partialGroupKey: string | null;
+
+  if (fixed) {
+    fullGroupKeys = fixed.fullGroupKeys.filter((key) => groups.has(key));
+    partialGroupKey = fixed.partialGroupKey && groups.has(fixed.partialGroupKey) ? fixed.partialGroupKey : null;
+  } else {
+    let remaining = desiredLoad;
+    fullGroupKeys = [];
+    const fullCandidates = rows
+      .filter((row) => row.key !== largest?.key)
+      .sort((a, b) => a.load - b.load || a.weekly - b.weekly || a.key.localeCompare(b.key));
+    for (const row of fullCandidates) {
+      if (row.load <= remaining + 1e-6) {
+        fullGroupKeys.push(row.key);
+        remaining -= row.load;
+      }
+    }
+    partialGroupKey = remaining > 1e-6 ? largest?.key ?? null : null;
+  }
+
+  const fullLoad = fullGroupKeys.reduce((sum, key) => sum + (groups.get(key)?.load ?? 0), 0);
+  const fullWeekly = fullGroupKeys.reduce((sum, key) => sum + (groups.get(key)?.weekly ?? 0), 0);
+  const remainingLoad = desiredLoad - fullLoad;
+  const partial = partialGroupKey ? groups.get(partialGroupKey) : undefined;
+  const impossible =
+    desiredLoad > totalLoad + 1e-6 ||
+    remainingLoad < -1e-6 ||
+    (remainingLoad > 1e-6 && (!partial || partial.load <= 1e-9 || remainingLoad > partial.load + 1e-6));
+  const partialFraction =
+    !impossible && partial && remainingLoad > 1e-9 ? Math.min(1, remainingLoad / partial.load) : 0;
+  const orderedGroupKeys = [...fullGroupKeys, ...(partialGroupKey ? [partialGroupKey] : [])];
+
+  return {
+    fullGroupKeys,
+    partialGroupKey,
+    orderedGroupKeys,
+    moveWeekly: impossible ? 0 : fullWeekly + (partial?.weekly ?? 0) * partialFraction,
+    insufficient: impossible,
+  };
 }
 
 function AllocationModal({
@@ -4428,8 +4552,7 @@ function AllocationModal({
   const { useContractualVolumes } = useContractVolumes();
   const volumeUnitLabel = (unit: VolumeUnit) =>
     unit === 'annual' ? t('common.unitAnnualShort') : unit === 'monthly' ? t('common.unitMonthlyShort') : t('common.unitWeeklyShort');
-  const operationGroupKey = (op: any): string =>
-    `${op.project_id ?? ''}:${op.part_id ?? ''}:${op.phase_id ?? ''}`;
+  const operationGroupKey = allocationOperationGroupKey;
   const operationWeekly = (op: any): number => {
     const w = Number(op?.effective_volume_weekly);
     if (Number.isFinite(w)) return w;
@@ -4800,8 +4923,9 @@ function AllocationModal({
         calculatorYears,
         year,
         apiHint: effectiveLoadHint,
+        preferApiGroupLoad: selectedGroups.length > 1,
       }),
-    [machineLoadFromCalculator, groupWeeklyForYear, selectedOp, calculatorYears, year, effectiveLoadHint]
+    [machineLoadFromCalculator, groupWeeklyForYear, selectedOp, calculatorYears, year, effectiveLoadHint, selectedGroups.length]
   );
 
   useEffect(() => {
@@ -4828,10 +4952,48 @@ function AllocationModal({
     };
   }, [machineId, selectedGroupKeys.join('|'), yearsForAllocation.join(','), scenarioId, useContractualVolumes]);
 
+  const targetPercentGroupPlan = useMemo(() => {
+    if (transferMode !== 'targetPercent' || targetPercentHint == null || selectedGroups.length <= 1) return null;
+    const groupOps = operations.filter((op) => selectedGroupKeySet.has(operationGroupKey(op)));
+    return buildTargetPercentGroupPlan(
+      groupOps,
+      targetPercentHint,
+      sourceTargetLoadPercent,
+      operationWeekly
+    );
+  }, [
+    transferMode,
+    targetPercentHint,
+    selectedGroups.length,
+    operations,
+    selectedGroupKeySet,
+    sourceTargetLoadPercent,
+  ]);
+
   const targetPercentCalc = useMemo(() => {
     if (transferMode !== 'targetPercent' || targetPercentHint == null) return null;
-    return computeVolumeForRemainingMachineLoad(targetPercentHint, sourceTargetLoadPercent, groupWeeklyForYear);
-  }, [transferMode, targetPercentHint, sourceTargetLoadPercent, groupWeeklyForYear]);
+    const base = computeVolumeForRemainingMachineLoad(targetPercentHint, sourceTargetLoadPercent, groupWeeklyForYear);
+    if (targetPercentGroupPlan == null) return base;
+    const fractionY = targetPercentHint.year_fraction > 1e-12 ? targetPercentHint.year_fraction : 1;
+    const moveBaseWeekly = targetPercentGroupPlan.moveWeekly / fractionY;
+    return {
+      ...base,
+      volume: Math.round(
+        weeklyToVolumeClient(moveBaseWeekly, base.unit, targetPercentHint.working_weeks_per_year) * 1e6
+      ) / 1e6,
+      projectedRemaining: targetPercentGroupPlan.insufficient
+        ? targetPercentHint.current_load_percent
+        : sourceTargetLoadPercent,
+      moveWeeklyEffective: targetPercentGroupPlan.moveWeekly,
+      insufficient: targetPercentGroupPlan.insufficient,
+    };
+  }, [
+    transferMode,
+    targetPercentHint,
+    sourceTargetLoadPercent,
+    groupWeeklyForYear,
+    targetPercentGroupPlan,
+  ]);
 
   const remainingLoadPercent = useMemo(() => {
     if (effectiveLoadHint == null || transferMode === 'full') return null;
@@ -5005,6 +5167,13 @@ function AllocationModal({
       });
       return;
     }
+    if (transferMode === 'targetPercent' && targetPercentCalc?.insufficient) {
+      setMessage({
+        type: 'err',
+        text: t('calculator.allocation.targetPercentInsufficient', { percent: sourceTargetLoadPercent }),
+      });
+      return;
+    }
     if (transferMode === 'targetPercent' && (targetPercentHint == null || targetPercentCalc == null)) {
       setMessage({ type: 'err', text: t('common.loading') });
       return;
@@ -5081,6 +5250,7 @@ function AllocationModal({
               calculatorYears,
               year: yearItem,
               apiHint: apiHintY,
+              preferApiGroupLoad: selectedGroups.length > 1,
             });
           }
 
@@ -5104,6 +5274,40 @@ function AllocationModal({
         })
       );
 
+      const anchorData = yearData[0];
+      const targetAnchorPlan =
+        transferMode === 'targetPercent' &&
+        selectedGroups.length > 1 &&
+        anchorData?.hintForYear != null
+          ? buildTargetPercentGroupPlan(
+              anchorData.groupOps,
+              anchorData.hintForYear,
+              sourceTargetLoadPercent,
+              operationWeekly
+            )
+          : null;
+      if (targetAnchorPlan?.insufficient) {
+        throw new Error(t('calculator.allocation.targetPercentInsufficient', { percent: sourceTargetLoadPercent }));
+      }
+      const targetPlanForYear = (data: (typeof yearData)[number]): TargetPercentGroupPlan | null => {
+        if (transferMode !== 'targetPercent' || selectedGroups.length <= 1 || data.hintForYear == null) {
+          return null;
+        }
+        const plan = buildTargetPercentGroupPlan(
+          data.groupOps,
+          data.hintForYear,
+          sourceTargetLoadPercent,
+          operationWeekly,
+          targetAnchorPlan ?? undefined
+        );
+        if (plan.insufficient) {
+          throw new Error(
+            `${t('calculator.allocation.targetPercentInsufficient', { percent: sourceTargetLoadPercent })} (${data.yearItem})`
+          );
+        }
+        return plan;
+      };
+
       const zeroYears = yearData
         .filter((d) => {
           if (d.groupOps.length === 0 || d.totalWeeklyForYear > 1e-9) return false;
@@ -5121,6 +5325,7 @@ function AllocationModal({
 
       if (!multiYearBatch) {
         const d0 = yearData[0];
+        const targetGroupPlan = targetPlanForYear(d0);
         const hint0 =
           transferMode === 'targetPercent'
             ? d0.hintForYear ??
@@ -5130,19 +5335,28 @@ function AllocationModal({
           transferMode === 'full'
             ? d0.totalWeeklyForYear
             : transferMode === 'targetPercent'
-              ? hint0 != null
+              ? targetGroupPlan != null
+                ? targetGroupPlan.moveWeekly
+                : hint0 != null
                 ? computeVolumeForRemainingMachineLoad(hint0, sourceTargetLoadPercent, d0.totalWeeklyForYear)
                     .moveWeeklyEffective
                 : 0
               : d0.requestedWeekly;
-        const resolved = resolveAllocationWeeklyForYear(
-          transferMode,
-          d0.totalWeeklyForYear,
-          requestedWeekly,
-          hint0,
-          sourceTargetLoadPercent,
-          d0.totalWeeklyForYear
-        );
+        const resolved =
+          targetGroupPlan != null
+            ? {
+                effectiveWeekly: targetGroupPlan.moveWeekly,
+                capped: false,
+                cappedByTargetPercent: false,
+              }
+            : resolveAllocationWeeklyForYear(
+                transferMode,
+                d0.totalWeeklyForYear,
+                requestedWeekly,
+                hint0,
+                sourceTargetLoadPercent,
+                d0.totalWeeklyForYear
+              );
         if (resolved.effectiveWeekly <= 1e-9) {
           const rep = d0.groupOps.find((o: any) => Number(o.id) === Number(opId)) ?? d0.groupOps[0];
           if (!isZeroVolumePreallocEligible(rep, d0.yearItem, operationWeekly)) {
@@ -5161,7 +5375,16 @@ function AllocationModal({
             effectiveWeekly: resolved.effectiveWeekly,
             capped: resolved.capped,
             cappedByTargetPercent: resolved.cappedByTargetPercent,
-            contributors: d0.contributors,
+            contributors:
+              targetGroupPlan != null
+                ? buildAllocationContributors(
+                    d0.groupOps,
+                    (opId as number) || Number(d0.groupOps[0]?.id),
+                    d0.yearItem,
+                    operationWeekly,
+                    targetGroupPlan.orderedGroupKeys
+                  )
+                : d0.contributors,
           },
         ];
         if (execPlansSingle.length === 0) {
@@ -5272,6 +5495,7 @@ function AllocationModal({
       const skippedLow: number[] = [];
 
       for (const d of yearData) {
+        const targetGroupPlan = targetPlanForYear(d);
         const hintY =
           transferMode === 'targetPercent'
             ? d.hintForYear
@@ -5282,19 +5506,28 @@ function AllocationModal({
           transferMode === 'full'
             ? d.totalWeeklyForYear
             : transferMode === 'targetPercent'
-              ? hintY != null
+              ? targetGroupPlan != null
+                ? targetGroupPlan.moveWeekly
+                : hintY != null
                 ? computeVolumeForRemainingMachineLoad(hintY, sourceTargetLoadPercent, d.totalWeeklyForYear)
                     .moveWeeklyEffective
                 : 0
               : d.requestedWeekly;
-        const resolved = resolveAllocationWeeklyForYear(
-          transferMode,
-          d.totalWeeklyForYear,
-          requestedWeekly,
-          hintY,
-          sourceTargetLoadPercent,
-          d.totalWeeklyForYear
-        );
+        const resolved =
+          targetGroupPlan != null
+            ? {
+                effectiveWeekly: targetGroupPlan.moveWeekly,
+                capped: false,
+                cappedByTargetPercent: false,
+              }
+            : resolveAllocationWeeklyForYear(
+                transferMode,
+                d.totalWeeklyForYear,
+                requestedWeekly,
+                hintY,
+                sourceTargetLoadPercent,
+                d.totalWeeklyForYear
+              );
         if (resolved.effectiveWeekly <= 1e-6) {
           const rep = d.groupOps.find((o: any) => Number(o.id) === Number(opId)) ?? d.groupOps[0];
           if (isZeroVolumePreallocEligible(rep, d.yearItem, operationWeekly) && d.contributors.length > 0) {
@@ -5315,7 +5548,16 @@ function AllocationModal({
           effectiveWeekly: resolved.effectiveWeekly,
           capped: resolved.capped,
           cappedByTargetPercent: resolved.cappedByTargetPercent,
-          contributors: d.contributors,
+          contributors:
+            targetGroupPlan != null
+              ? buildAllocationContributors(
+                  d.groupOps,
+                  (opId as number) || Number(d.groupOps[0]?.id),
+                  d.yearItem,
+                  operationWeekly,
+                  targetGroupPlan.orderedGroupKeys
+                )
+              : d.contributors,
         });
       }
 
@@ -5639,7 +5881,7 @@ function AllocationModal({
                 <tbody>
                   {freeCandidates.map((c) => (
                     <tr key={c.machine_id}>
-                      <td style={{ padding: '0.75rem' }}>{c.internal_number}</td>
+                      <td style={{ padding: '0.75rem' }}>{calculatorMachineNumberLabel(c.internal_number, c.location)}</td>
                       <td style={{ padding: '0.75rem' }}>{c.type}</td>
                       <td style={{ padding: '0.75rem' }}>{c.load_percent}%</td>
                       <td style={{ padding: '0.75rem' }}>{c.free_capacity_sec_per_week}</td>
@@ -5668,7 +5910,7 @@ function AllocationModal({
                     ) : (
                       candidates.map((c) => (
                         <option key={c.machine_id} value={c.machine_id}>
-                          {c.internal_number} ({c.type}){c.load_percent >= 90 ? ` — ${c.load_percent}%` : ''}
+                          {calculatorMachineNumberLabel(c.internal_number, c.location)} ({c.type}){c.load_percent >= 90 ? ` — ${c.load_percent}%` : ''}
                         </option>
                       ))
                     )}
