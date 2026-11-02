@@ -50,6 +50,7 @@ const BUNDLE_DATE_COLUMNS = ['sop', 'eop', 'eop_original', 'eop_extension', 'eop
 function bundle_import_request(PDO $pdo): void
 {
     require_permission($pdo, 'admin_database.edit');
+    @set_time_limit(300);
     $length = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
     if ($length > 0 && $_POST === [] && $_FILES === []) {
         json_response(413, ['error' => 'Plik jest za duży dla limitu przesyłania PHP.']);

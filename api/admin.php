@@ -630,6 +630,16 @@ function admin_handle_admin(string $method, string $path): bool
         bundle_import_request($pdo);
     }
 
+    require_once __DIR__ . '/bundle_export.php';
+    if (handle_bundle_export($method, $path, $pdo)) {
+        return true;
+    }
+
+    require_once __DIR__ . '/data_import.php';
+    if (handle_data_import($method, $path, $pdo)) {
+        return true;
+    }
+
     if (in_array($path, ['/admin/backup-now', '/admin/restore-from-backup', '/admin/clear-database', '/admin/pick-backup-file'], true)) {
         require_permission($pdo, 'admin_database.edit');
         json_response(400, ['error' => 'Kopia zapasowa, przywracanie i czyszczenie bazy zostaną włączone po zmianach IIS.']);

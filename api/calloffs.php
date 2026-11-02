@@ -104,29 +104,63 @@ function calloff_quantity(array $monthly, int $partId, int $year, int $month): f
     return (float) ($monthly[$partId][$year][$month] ?? 0);
 }
 
-function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $monthly, array $statuses, array $types, ?array $onlyIds): array
+/** Łączy bucket materiałowy (kształt jak w calc_material_bucket_add) z innym buckietem — do sumowania miesięcy w roku. */
+function calloff_merge_material_buckets(array &$target, array $source): void
+{
+    foreach ($source as $materialId => $entry) {
+        if (!isset($target[$materialId])) {
+            $target[$materialId] = [
+                'material_alias' => $entry['material_alias'],
+                'material_sap' => $entry['material_sap'],
+                'material_width_mm' => $entry['material_width_mm'],
+                'material_length_mm' => $entry['material_length_mm'],
+                'material_grammage_kg_m2' => $entry['material_grammage_kg_m2'],
+                'required' => 0.0,
+                'details' => [],
+            ];
+        }
+        $target[$materialId]['required'] += (float) $entry['required'];
+        foreach ($entry['details'] as $key => $detail) {
+            if (!isset($target[$materialId]['details'][$key])) {
+                $target[$materialId]['details'][$key] = ['project_label' => $detail['project_label'], 'detail_label' => $detail['detail_label'], 'required' => 0.0];
+            }
+            $target[$materialId]['details'][$key]['required'] += (float) $detail['required'];
+        }
+    }
+}
+
+/**
+ * Obciążenie z pliku SAP (Call offs) per maszyna/miesiąc. Dla maszyn „linia bazowa” liczy prawdziwe
+ * zużycie materiału na podstawie ilości z pliku SAP (nie kopiuje wartości ze strony capacity bazowej) —
+ * wymaga przekazania $baseline = baseline_bundle($pdo), żeby nie odpytywać bazy w każdym miesiącu.
+ */
+function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $monthly, array $statuses, array $types, ?array $onlyIds, array $baseline): array
 {
     $machines = calculator_filtered_machines($pdo, $statuses, $types, $onlyIds);
     if ($machines === []) {
         return [];
     }
     $ops = calculator_merge_ops(calculator_operations($pdo, array_keys($machines)), calculator_rfq_operations($pdo));
+    $ops = calculator_merge_ops($ops, $baseline['ops']);
     $ctx = calc_context($pdo);
     $baseSettings = calc_settings($pdo, $year);
     $shares = calc_allocation_shares($ctx['opVolumes'][$year] ?? [], $ctx['parentById'], $ctx['childrenByParent'], $year, $month, $baseSettings);
     $loads = [];
     $details = [];
     foreach ($machines as $machineId => $machine) {
-        if ((int) ($machine['is_baseline'] ?? 0) === 1) {
-            $loads[$machineId] = 0;
-            $details[$machineId] = [];
-            continue;
-        }
+        $isBaselineMachine = (int) ($machine['is_baseline'] ?? 0) === 1;
         $settings = baseline_volume_settings($baseSettings, $machine);
         $machineOee = isset($machine['oee_override']) && is_numeric($machine['oee_override']) ? (float) $machine['oee_override'] : null;
         $availability = calc_machine_availability($machine, $settings, $machineOee);
         $required = 0.0;
         $byClient = [];
+        $materialBucket = [];
+        if ($isBaselineMachine) {
+            foreach (baseline_external_rows($machine, $year, $baseline) as $materialRow) {
+                $required += (float) $materialRow['required_seconds'];
+                calc_material_bucket_add($materialBucket, $materialRow, '', 'Wolumen zewnętrzny');
+            }
+        }
         foreach ($ops[$machineId] ?? [] as $op) {
             $partId = (int) ($op['part_id'] ?? 0);
             $qty = calloff_quantity($monthly, $partId, $year, $month);
@@ -135,7 +169,8 @@ function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $mon
                 continue;
             }
             $weekly = calc_volume_to_weekly($qty * $share, 'monthly', $settings);
-            $seconds = calc_operation_demand($machine, $op, $weekly, [])['seconds'];
+            $demand = calc_operation_demand($machine, $op, $weekly, $baseline['materials']);
+            $seconds = (float) $demand['seconds'];
             $required += $seconds;
             $client = trim((string) ($op['project_client'] ?? ''));
             $client = $client !== '' ? $client : '—';
@@ -150,9 +185,18 @@ function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $mon
             $byClient[$client]['required'] = ($byClient[$client]['required'] ?? 0) + $seconds;
             $byClient[$client]['projects'][$projectId]['required'] += $seconds;
             $byClient[$client]['projects'][$projectId]['details'][$label] = ($byClient[$client]['projects'][$projectId]['details'][$label] ?? 0) + $seconds;
+            if ($isBaselineMachine) {
+                $projectLabel = trim($client . ' / ' . (string) ($op['project_name'] ?? ''));
+                foreach ($demand['materials'] as $materialRow) {
+                    calc_material_bucket_add($materialBucket, $materialRow, $projectLabel, $label);
+                }
+            }
         }
         $loads[$machineId] = $availability > 0 ? (int) round(($required / $availability) * 100) : ($required > 0 ? 100 : 0);
         $details[$machineId] = ['required' => $required, 'availability' => $availability, 'clients' => $byClient];
+        if ($isBaselineMachine) {
+            $details[$machineId]['material_bucket'] = $materialBucket;
+        }
     }
     return ['loads' => $loads, 'details' => $details];
 }
@@ -160,17 +204,31 @@ function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $mon
 function calloff_year_loads(PDO $pdo, int $id, int $yearFrom, int $yearTo, array $statuses, array $types, ?array $onlyIds): array
 {
     $monthly = calloff_monthly($pdo, $id, $yearFrom, $yearTo);
+    $baseline = baseline_bundle($pdo);
     $byYear = [];
+    $materialBreakdownByYear = [];
     for ($year = $yearFrom; $year <= $yearTo; $year++) {
         $span = calloff_month_span($monthly, $year);
         $sums = [];
         $counts = [];
+        $yearBuckets = [];
+        $availabilities = [];
         if ($span !== null) {
             for ($month = $span['from']; $month <= $span['to']; $month++) {
-                $monthLoads = calloff_machine_month_loads($pdo, $year, $month, $monthly, $statuses, $types, $onlyIds);
+                $monthLoads = calloff_machine_month_loads($pdo, $year, $month, $monthly, $statuses, $types, $onlyIds, $baseline);
                 foreach ($monthLoads['loads'] as $machineId => $load) {
                     $sums[$machineId] = ($sums[$machineId] ?? 0) + $load;
                     $counts[$machineId] = ($counts[$machineId] ?? 0) + 1;
+                }
+                foreach ($monthLoads['details'] as $machineId => $detail) {
+                    if (!isset($detail['material_bucket'])) {
+                        continue;
+                    }
+                    $availabilities[$machineId] = (float) ($detail['availability'] ?? 0);
+                    if (!isset($yearBuckets[$machineId])) {
+                        $yearBuckets[$machineId] = [];
+                    }
+                    calloff_merge_material_buckets($yearBuckets[$machineId], $detail['material_bucket']);
                 }
             }
         }
@@ -178,8 +236,12 @@ function calloff_year_loads(PDO $pdo, int $id, int $yearFrom, int $yearTo, array
         foreach ($sums as $machineId => $sum) {
             $byYear[$year][$machineId] = $counts[$machineId] > 0 ? (int) round($sum / $counts[$machineId]) : 0;
         }
+        $materialBreakdownByYear[$year] = [];
+        foreach ($yearBuckets as $machineId => $bucket) {
+            $materialBreakdownByYear[$year][$machineId] = calc_material_breakdown($bucket, $availabilities[$machineId] ?? 0);
+        }
     }
-    return $byYear;
+    return ['loads' => $byYear, 'material_breakdown' => $materialBreakdownByYear];
 }
 
 function calloff_source(PDO $pdo): PDO
@@ -215,16 +277,19 @@ function calloff_calculator(PDO $pdo, int $id): void
     $statuses = calculator_statuses();
     $onlyIds = calculator_scope_ids($source);
     $payload = calculator_machines($source, $yearFrom, $yearTo, $statuses, $types, $onlyIds, $contract);
-    $loads = calloff_year_loads($source, $id, $yearFrom, $yearTo, $statuses, $types, $onlyIds);
+    $loadsResult = calloff_year_loads($source, $id, $yearFrom, $yearTo, $statuses, $types, $onlyIds);
+    $loads = $loadsResult['loads'];
+    $materialBreakdownByYear = $loadsResult['material_breakdown'];
     foreach ($payload as &$machine) {
+        $machineId = (int) $machine['machine_id'];
         foreach ($machine['years'] as $year => &$cell) {
-            $load = (int) ($loads[(int) $year][(int) $machine['machine_id']] ?? 0);
+            $load = (int) ($loads[(int) $year][$machineId] ?? 0);
             $cell['call_off_load_percent'] = $load;
             $cell['call_off_annual_load_percent'] = $load;
             $cell['call_off_annual_required_sec_per_week'] = 0;
             $cell['call_off_annual_availability_sec_per_week'] = 0;
             $cell['call_off_detail_breakdown'] = [];
-            $cell['call_off_material_breakdown'] = $cell['material_breakdown'] ?? [];
+            $cell['call_off_material_breakdown'] = $materialBreakdownByYear[(int) $year][$machineId] ?? [];
         }
         unset($cell);
     }
@@ -268,9 +333,19 @@ function calloff_period(PDO $pdo, int $id): void
     $types = calc_csv_list('types') ?: calc_csv_list('type');
     $statuses = calculator_statuses();
     $onlyIds = calculator_scope_ids($source);
+    $baseline = baseline_bundle($source);
     $byMonth = [];
+    $materialBreakdownByMonth = [];
     for ($month = 1; $month <= 12; $month++) {
-        $byMonth[$month] = calloff_machine_month_loads($source, $year, $month, $monthly, $statuses, $types, $onlyIds)['loads'];
+        $monthResult = calloff_machine_month_loads($source, $year, $month, $monthly, $statuses, $types, $onlyIds, $baseline);
+        $byMonth[$month] = $monthResult['loads'];
+        $materialBreakdownByMonth[$month] = [];
+        foreach ($monthResult['details'] as $machineId => $detail) {
+            if (!isset($detail['material_bucket'])) {
+                continue;
+            }
+            $materialBreakdownByMonth[$month][$machineId] = calc_material_breakdown($detail['material_bucket'], (float) ($detail['availability'] ?? 0));
+        }
     }
     foreach ($base['machines'] as &$machine) {
         $machineId = (int) $machine['machine_id'];
@@ -278,11 +353,11 @@ function calloff_period(PDO $pdo, int $id): void
             $load = (int) ($byMonth[(int) $month][$machineId] ?? 0);
             $cell['call_off_load_percent'] = $load;
             $cell['call_off_detail_breakdown'] = [];
-            $cell['call_off_material_breakdown'] = $cell['material_breakdown'] ?? [];
+            $cell['call_off_material_breakdown'] = $materialBreakdownByMonth[(int) $month][$machineId] ?? [];
             foreach ($cell['weeks'] as &$week) {
                 $week['call_off_load_percent'] = $load;
                 $week['call_off_detail_breakdown'] = [];
-                $week['call_off_material_breakdown'] = $week['material_breakdown'] ?? [];
+                $week['call_off_material_breakdown'] = $materialBreakdownByMonth[(int) $month][$machineId] ?? [];
             }
             unset($week);
         }
@@ -323,11 +398,12 @@ function calloff_breakdown(PDO $pdo, array $machines, int $year, ?int $month): a
     $types = calc_csv_list('types') ?: calc_csv_list('type');
     $statuses = calculator_statuses();
     $onlyIds = array_map('intval', array_keys($machines));
+    $baseline = baseline_bundle($pdo);
     $sum = 0;
     $count = 0;
     $clients = [];
     for ($item = $monthFrom; $item <= $monthTo; $item++) {
-        $result = calloff_machine_month_loads($pdo, $year, $item, $monthly, $statuses, $types, $onlyIds);
+        $result = calloff_machine_month_loads($pdo, $year, $item, $monthly, $statuses, $types, $onlyIds, $baseline);
         foreach ($result['loads'] as $load) {
             $sum += $load;
             $count++;
@@ -395,8 +471,16 @@ function calloff_breakdown(PDO $pdo, array $machines, int $year, ?int $month): a
 
 function calloff_uploaded_file(): array
 {
+    $length = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($length > 0 && $_POST === [] && $_FILES === []) {
+        json_response(413, ['error' => 'Plik jest za duży dla limitu przesyłania PHP (post_max_size/upload_max_filesize na serwerze).']);
+    }
     $file = $_FILES['file'] ?? null;
     if (!is_array($file) || (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        $code = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+        if ($code === UPLOAD_ERR_INI_SIZE || $code === UPLOAD_ERR_FORM_SIZE) {
+            json_response(413, ['error' => 'Plik jest za duży dla limitu przesyłania PHP (post_max_size/upload_max_filesize na serwerze).']);
+        }
         json_response(400, ['error' => 'Brak pliku SalesFcst (pole: file)']);
     }
     $tmp = (string) ($file['tmp_name'] ?? '');
