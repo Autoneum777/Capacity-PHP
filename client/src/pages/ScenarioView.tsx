@@ -1010,7 +1010,7 @@ export default function ScenarioView() {
                   checked={volumeDraft.length > 0 && selectedVolumeYears.length === volumeDraft.length}
                   onChange={(e) => setSelectedVolumeYears(e.target.checked ? volumeDraft.map((r) => r.year) : [])}
                 />
-                zaznacz wszystkie
+                {t('common.selectAll')}
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                 Zwiększ o

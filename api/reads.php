@@ -1529,9 +1529,6 @@ function handle_reads(string $method, string $path): bool
         }
         json_response(200, $rows);
     }
-    if ($path === '/machine-groups') {
-        json_response(200, []);
-    }
     if ($path === '/projects/clients') {
         json_response(200, project_clients($pdo));
     }

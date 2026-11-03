@@ -137,6 +137,11 @@ const RULES: Rule[] = [
     de: 'Volumen für Operation #$1 für Jahr $2 gelöscht.',
   },
   {
+    re: /^alokacja — część wolumenu detalu "(.+)"(?: \(projekt (.+)\))? z maszyny (.+) przeniesiona na maszynę (.+), rok (\d+)\.?$/,
+    en: 'allocation — part of volume for part "$1"$2 moved from machine $3 to machine $4, year $5.',
+    de: 'Allokation — Teil des Volumens für Teil „$1“$2 von Maschine $3 auf Maschine $4 verschoben, Jahr $5.',
+  },
+  {
     re: /^alokacja — część wolumenu operacji #(\d+) przeniesiona na maszynę #(\d+), utworzono operację #(\d+), rok (\d+)\.?$/,
     en: 'allocation — part of operation #$1 volume moved to machine #$2, created operation #$3, year $4.',
     de: 'Allokation — Teil des Volumens von Operation #$1 auf Maschine #$2 verschoben, Operation #$3 erstellt, Jahr $4.',
@@ -214,8 +219,20 @@ function applyRule(body: string, rule: Rule, locale: 'en' | 'de'): string | null
   const m = body.match(rule.re);
   if (!m) return null;
   let out = locale === 'en' ? rule.en : rule.de;
+  if (rule.re.source.includes('alokacja — część wolumenu detalu')) {
+    const projectSuffix =
+      (m[2] ?? '').trim() !== ''
+        ? locale === 'en'
+          ? ` (project ${m[2]})`
+          : ` (Projekt ${m[2]})`
+        : '';
+    out = out.replace('$2', projectSuffix);
+  }
   for (let i = 1; i < m.length; i++) {
     let val = m[i] ?? '';
+    if (rule.re.source.includes('alokacja — część wolumenu detalu') && i === 2) {
+      continue;
+    }
     if (val === 'produkcja → kontrakt') {
       val = locale === 'en' ? 'production → contract' : 'Produktion → Vertrag';
     } else if (val === 'kontrakt → produkcja') {

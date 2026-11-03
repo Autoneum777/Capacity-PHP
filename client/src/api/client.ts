@@ -1,10 +1,22 @@
-import { API_UNREACHABLE_MESSAGE } from '../i18n/apiErrors';
+import { API_UNREACHABLE_MESSAGE, translateApiError } from '../i18n/apiErrors';
+import { loadStoredLocale, translate } from '../i18n/core';
+import type { Locale } from '../i18n/types';
 
 const ENV_API = (import.meta.env.VITE_API_BASE ?? '').toString().trim().replace(/\/+$/, '');
 const BASE = ENV_API || '/api';
 
+function apiLocale(): Locale {
+  const v = loadStoredLocale();
+  return v === 'pl' || v === 'en' || v === 'de' ? v : 'en';
+}
+
+function localizeApiError(message: string | undefined | null): string {
+  return translateApiError(apiLocale(), message);
+}
+
 /** Zgodny z `CAPACITY_DATA_IMPORT_SCHEMA_TAG` na backendzie — weryfikacja pobranego szablonu. */
 export const CAPACITY_DATA_IMPORT_SCHEMA_EXPECTED = 'operacje-v3';
+/** @deprecated Use i18n key adminSettingsExtra.confirmImportMachines (locale-specific). */
 export const MACHINES_IMPORT_CONFIRM = 'IMPORTUJ_MASZYNY';
 
 function mapFetchFailure(e: unknown): Error {
@@ -29,12 +41,11 @@ function isLikelyApiUnreachable(res: Response, data: unknown): boolean {
  * który podaje użytkownikowi konkretny następny krok.
  */
 function friendlyHttpError(res: Response, apiErr?: string | null): Error {
-  if (apiErr) return new Error(apiErr);
-  if (res.status === 413) return new Error('Plik jest za duży dla tego importu — zmniejsz plik i spróbuj ponownie.');
+  if (apiErr) return new Error(localizeApiError(apiErr));
+  const loc = apiLocale();
+  if (res.status === 413) return new Error(translate(loc, 'errors.fileTooLarge'));
   if (res.status >= 500) {
-    return new Error(
-      `Serwer zwrócił błąd (HTTP ${res.status}) bez opisu. Sprawdź konsolę serwera backend (okno „npm run dev” w katalogu server) — tam jest pełny opis błędu.`,
-    );
+    return new Error(translate(loc, 'errors.serverErrorNoDetail', { status: res.status }));
   }
   return new Error(res.statusText || `HTTP ${res.status}`);
 }
@@ -73,8 +84,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     if (isLikelyApiUnreachable(res, data)) {
       throw new Error(API_UNREACHABLE_MESSAGE);
     }
-    if (apiError) throw new Error(apiError);
-    throw new Error(res.statusText || `HTTP ${res.status}`);
+    if (apiError) throw new Error(localizeApiError(apiError));
+    throw friendlyHttpError(res, null);
   }
   return data as T;
 }
@@ -494,10 +505,11 @@ export const api = {
       }>('/admin/clear-database', { method: 'POST', body: JSON.stringify(body) }),
     /** Pobiera .xlsx: arkusz na tabelę + _INSTRUKCJA. `onlyTables` → tylko wskazane arkusze (szablon pod import częściowy). */
     downloadCapacityBundleTemplate: async (onlyTables?: string[]) => {
-      const qs =
-        onlyTables?.length != null && onlyTables.length > 0
-          ? `?onlyTables=${encodeURIComponent(JSON.stringify(onlyTables))}`
-          : '';
+      const qs = toQuery({
+        locale: apiLocale(),
+        onlyTables:
+          onlyTables?.length != null && onlyTables.length > 0 ? JSON.stringify(onlyTables) : undefined,
+      });
       let res: Response;
       try {
         res = await fetch(`${BASE}/admin/capacity-bundle-template.xlsx${qs}`, { cache: 'no-store' });
@@ -599,7 +611,9 @@ export const api = {
     downloadCapacityDataTemplate: async (): Promise<{ backendSchemaHeader: string | null }> => {
       let res: Response;
       try {
-        res = await fetch(`${BASE}/admin/capacity-data-template.xlsx${toQuery({ t: Date.now() })}`, {
+        res = await fetch(
+          `${BASE}/admin/capacity-data-template.xlsx${toQuery({ t: Date.now(), locale: apiLocale() })}`,
+          {
           cache: 'no-store',
         });
       } catch (e) {
@@ -610,10 +624,7 @@ export const api = {
         const data = await res.json().catch(() => ({}));
         const apiErr = (data as { error?: string }).error;
         if (res.status === 404) {
-          throw new Error(
-            apiErr ||
-              'Endpoint importu danych nie został znaleziony (404). Zrestartuj serwer backend (w katalogu server: npm run dev) i odśwież stronę.',
-          );
+          throw new Error(apiErr ? localizeApiError(apiErr) : translate(apiLocale(), 'errors.importDataEndpoint404'));
         }
         throw friendlyHttpError(res, apiErr);
       }
@@ -621,7 +632,7 @@ export const api = {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      let filename = 'capacity_szablon_import_danych_v2.xlsx';
+      let filename = 'capacity_szablon_import_danych_v3.xlsx';
       const cd = res.headers.get('Content-Disposition');
       if (cd) {
         const m = /filename="([^"]+)"/i.exec(cd);
@@ -651,10 +662,7 @@ export const api = {
       if (!res.ok) {
         const apiErr = (data as { error?: string }).error;
         if (res.status === 404) {
-          throw new Error(
-            apiErr ||
-              'Endpoint importu danych nie został znaleziony (404). Zrestartuj serwer backend (w katalogu server: npm run dev).',
-          );
+          throw new Error(apiErr ? localizeApiError(apiErr) : translate(apiLocale(), 'errors.importDataEndpoint404'));
         }
         throw friendlyHttpError(res, apiErr);
       }
@@ -689,7 +697,10 @@ export const api = {
     downloadMachinesImportTemplate: async () => {
       let res: Response;
       try {
-        res = await fetch(`${BASE}/admin/machines-import-template.xlsx${toQuery({ t: Date.now() })}`, { cache: 'no-store' });
+        res = await fetch(
+          `${BASE}/admin/machines-import-template.xlsx${toQuery({ t: Date.now(), locale: apiLocale() })}`,
+          { cache: 'no-store' },
+        );
       } catch (e) {
         throw mapFetchFailure(e);
       }

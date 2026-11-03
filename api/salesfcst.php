@@ -16,6 +16,8 @@ function salesfcst_normalize_ref(mixed $value): string
         $raw = (string) (int) round((float) $value);
     } else {
         $raw = trim((string) $value);
+        $raw = preg_replace('/\s*\(\d+\)\s*$/', '', $raw) ?? $raw;
+        $raw = trim($raw);
         if (preg_match('/^(-?\d+)\.0+$/', $raw, $match) === 1) {
             $raw = $match[1];
         } elseif (is_numeric($raw)) {

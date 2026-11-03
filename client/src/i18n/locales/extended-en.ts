@@ -48,6 +48,22 @@ export const extendedEn: TranslationTree = {
     yearsVolumeZero: '{{detail}}',
     operationMissingYears: '{{detail}}',
     yearVolumeTooLargeShort: '{{detail}}',
+    targetMachineNotFound: 'Target machine not found.',
+    targetMachineInactive: 'The target machine is inactive. Volume can only be moved to an active or RFQ machine.',
+    selectDifferentMachine: 'Select a different machine.',
+    noCapacityData: 'No capacity data (year settings or machine).',
+    volumeZeroAssignOnlyZero: 'For a year with no volume you can only assign the part with transfer 0.',
+    allocationSaveFailed: 'Failed to save allocation.',
+    operationNotOnMachineYear: 'Operation is not on this machine or has no volume in the selected year.',
+    noMoveToUndo: 'No move to undo.',
+    fileTooLarge: 'File is too large for this upload — reduce the file size and try again.',
+    serverErrorNoDetail:
+      'Server returned HTTP {{status}} without details. Check the backend console for the full error.',
+    importDataEndpoint404:
+      'Data import endpoint not found (404). Restart the PHP API (npm run php:api) and refresh the page.',
+    materialsBaselineOnly: 'Materials are only available for a baseline machine.',
+    routingImportFailed: 'Failed to import routing file.',
+    volumesLoadFailed: 'Failed to load volumes.',
   },
   calculator: {
     legend: {
@@ -150,7 +166,7 @@ export const extendedEn: TranslationTree = {
       'Parts catalog: SAP No., Alias, Free text. In a project you can search by SAP No. or Alias. You can add, edit and delete entries. The Project column shows projects using this part. Line No. lists machine line numbers from operations on this part.',
     addDetail: 'Add part',
     duplicateExistsModal:
-      'A part with this designation already exists and another one was not created.',
+      'A part with this SAP number already exists and another one was not created. Alias and free text may repeat.',
     duplicateExistsTitle: 'Part already exists',
     sapCol: 'SAP No.',
     aliasCol: 'Alias',
@@ -612,7 +628,21 @@ export const extendedEn: TranslationTree = {
     schemaOldBackend:
       'Warning: backend does not confirm operacje-v2 (404 or old code). In server folder run `npm run build`, then `npm start`, or `npm run dev`. Ensure frontend hits the same API (proxy /api or correct VITE_API_BASE).',
     dataTemplateFailed: 'Failed to download data template.',
-    importConfirmRequired: 'To import data, type exactly: IMPORTUJ_DANE (case sensitive).',
+    dataFileRequired: 'Select an .xlsx file to upload.',
+    bundleFileRequired: 'Select an .xlsx or .zip (full package) file to upload.',
+    dataTemplateDownloaded: 'Downloaded data import template (expected file: capacity_szablon_import_danych_v3.xlsx).',
+    restoreSuccess: 'Database restored from: {{path}}. Safety backup: {{backup}}.',
+    clearConfirmDialog:
+      'This operation is irreversible: all application data (machines, projects, operations, scenarios, etc.) will be permanently deleted. Backup settings in admin remain. {{backupNote}} Continue?',
+    clearDone: 'Database cleared ({{tables}} tables, {{rows}} rows deleted).',
+    backupFileNote: 'Backup: {{file}}.',
+    bundleImportNoSummary: 'Server did not return import summary.',
+    bundlePartialDownloaded: 'Downloaded partial template ({{tables}}) — capacity_baza_szablon_wybrane.zip.',
+    bundleZipRestoredNote:
+      ' Restored call-offs folder ({{files}} files) and {{snapshots}} scenario snapshots from ZIP package.',
+    bundleImportZipConfirmNote:
+      ' From the .zip package, large scenario snapshots and the call-offs folder (source files) will also be restored.',
+    importConfirmRequired: 'To import data, type exactly: IMPORT_DATA (case sensitive).',
     importReplaceConfirm:
       'REPLACE mode: input data in the database will match the Excel file — records not in the file (machines, projects, operations, etc.) will be deleted. A backup is created before import. Continue?',
     importAppendConfirm:
@@ -620,12 +650,12 @@ export const extendedEn: TranslationTree = {
     importDoneReplace: 'Data import completed (file state replacement).',
     importDoneAppend: 'Data import completed (append and update from file).',
     importFailed: 'Data import failed.',
-    clearConfirmRequired: 'To clear the database, type exactly: WYCZYSC_BAZE (case sensitive).',
+    clearConfirmRequired: 'To clear the database, type exactly: CLEAR_DATABASE (case sensitive).',
     clearBackupAckRequired: 'Confirm you have a backup or enable automatic backup before clearing.',
     clearAutoBackup: 'The system will create an automatic database backup before clearing.',
     clearNoAutoBackup: 'No automatic backup — ensure you have your own backup.',
     clearFailed: 'Failed to clear database.',
-    bundleConfirmRequired: 'To import, type exactly: IMPORTUJ_BAZE (case sensitive).',
+    bundleConfirmRequired: 'To import, type exactly: IMPORT_BUNDLE (case sensitive).',
     bundlePartialRequired: 'Select at least one table for partial import.',
     bundlePartialConfirm:
       'Partial import: only these tables will be cleared and filled from file sheets: {{tables}}. Other SQLite data is unchanged. File sheets must match table names. Create backup before continuing. Continue?',
@@ -650,7 +680,7 @@ export const extendedEn: TranslationTree = {
     machinesImportIntro:
       'Upload an .xlsx file with machines only (sheet “Maszyny”). Creates or updates machines by internal number. Supported columns include sap_number, type, status, location, oee_override, machine_usage and dimensions. A full ZIP backup (DB + call-offs + attachments) is created before import.',
     machinesImportConfirmLabel: 'Import confirmation (type exactly):',
-    machinesImportConfirmRequired: 'To import machines, type exactly: IMPORTUJ_MASZYNY (case sensitive).',
+    machinesImportConfirmRequired: 'To import machines, type exactly: IMPORT_MACHINES (case sensitive).',
     machinesImportConfirm:
       'Machine data from the file will be added or updated (matched by internal number). The system will create a backup before import. Continue?',
     machinesFileRequired: 'Select an .xlsx file with machines.',
@@ -771,9 +801,10 @@ export const extendedEn: TranslationTree = {
     partialTableScenarios: 'Scenarios (scenarios)',
     partialTableCallOffComparisons: 'Call offs — comparisons (call_off_comparisons)',
     partialTableCallOffVolumes: 'Call offs — volumes (call_off_volumes)',
-    confirmImportData: 'IMPORTUJ_DANE',
-    confirmImportBundle: 'IMPORTUJ_BAZE',
-    confirmClearDb: 'WYCZYSC_BAZE',
+    confirmImportData: 'IMPORT_DATA',
+    confirmImportBundle: 'IMPORT_BUNDLE',
+    confirmImportMachines: 'IMPORT_MACHINES',
+    confirmClearDb: 'CLEAR_DATABASE',
   },
   dataViz: {
     title: 'Data visualization',

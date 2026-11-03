@@ -11,6 +11,126 @@ function write_note(PDO $pdo, int $projectId, string $note, string $author, ?int
     )->execute([$projectId, date('Y-m-d'), $author, $note, 'auto', $machineId, $partId, $operationId]);
 }
 
+function history_machine_label(PDO $pdo, int $machineId): string
+{
+    if ($machineId <= 0) {
+        return '—';
+    }
+    $stmt = $pdo->prepare('SELECT sap_number, internal_number FROM machines WHERE id = ?');
+    $stmt->execute([$machineId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        return (string) $machineId;
+    }
+    $sap = trim((string) ($row['sap_number'] ?? ''));
+    $internal = trim((string) ($row['internal_number'] ?? ''));
+    if ($sap !== '' && $internal !== '') {
+        return $sap . ' (' . $internal . ')';
+    }
+    if ($internal !== '') {
+        return $internal;
+    }
+    if ($sap !== '') {
+        return $sap;
+    }
+    return (string) $machineId;
+}
+
+function history_format_allocation_note(
+    string $partLabel,
+    string $sourceMachineLabel,
+    string $targetMachineLabel,
+    int $year,
+    string $projectLabel = ''
+): string {
+    $detailBit = $partLabel !== '' ? 'detalu "' . $partLabel . '"' : 'detalu';
+    $projectBit = $projectLabel !== '' ? ' (projekt ' . $projectLabel . ')' : '';
+    return 'Automatyczna zmiana: alokacja — część wolumenu ' . $detailBit . $projectBit
+        . ' z maszyny ' . $sourceMachineLabel . ' przeniesiona na maszynę ' . $targetMachineLabel
+        . ', rok ' . $year . '.';
+}
+
+function history_operation_machine_id(PDO $pdo, ?array $bundle, int $operationId): int
+{
+    if ($operationId <= 0) {
+        return 0;
+    }
+    if ($bundle !== null) {
+        foreach ($bundle['operations'] as $row) {
+            if ((int) ($row['id'] ?? 0) === $operationId) {
+                return (int) ($row['machine_id'] ?? 0);
+            }
+        }
+    }
+    $stmt = $pdo->prepare('SELECT machine_id FROM operations WHERE id = ?');
+    $stmt->execute([$operationId]);
+    $machineId = $stmt->fetchColumn();
+    return $machineId !== false ? (int) $machineId : 0;
+}
+
+function history_resolve_machine_label(PDO $pdo, string $raw, int $fallbackMachineId = 0): string
+{
+    $raw = trim($raw);
+    if (preg_match('/^#(\d+)$/', $raw, $matches)) {
+        return history_machine_label($pdo, (int) $matches[1]);
+    }
+    if ($raw !== '') {
+        return $raw;
+    }
+    return $fallbackMachineId > 0 ? history_machine_label($pdo, $fallbackMachineId) : '—';
+}
+
+/** Zamienia stare notatki alokacji z #id operacji/maszyny na opisy detalu i maszyn. */
+function history_humanize_allocation_note(PDO $pdo, string $note, array $ctx, ?array $bundle = null): string
+{
+    $trimmed = trim($note);
+    if ($trimmed === '') {
+        return $note;
+    }
+    $hasAutoPrefix = (bool) preg_match('/^Automatyczna zmiana:\s*/u', $trimmed);
+    $body = $hasAutoPrefix ? trim((string) preg_replace('/^Automatyczna zmiana:\s*/u', '', $trimmed)) : $trimmed;
+
+    $partId = (int) ($ctx['part_id'] ?? 0);
+    $targetMachineId = (int) ($ctx['machine_id'] ?? 0);
+    $projectLabel = trim((string) ($ctx['project_label'] ?? ''));
+
+    $partLabel = trim((string) ($ctx['part_label'] ?? ''));
+    if ($partLabel === '' && $partId > 0) {
+        $partLabel = write_part_label($pdo, $partId);
+        if (str_starts_with($partLabel, 'detal #')) {
+            $partLabel = '';
+        }
+    }
+
+    $format = static function (int $sourceOpId, int $targetId, int $year, string $targetRaw = '') use (
+        $pdo,
+        $bundle,
+        $partLabel,
+        $projectLabel,
+        $targetMachineId
+    ): string {
+        $sourceMachineId = history_operation_machine_id($pdo, $bundle, $sourceOpId);
+        $sourceLabel = history_machine_label($pdo, $sourceMachineId);
+        $targetId = $targetId > 0 ? $targetId : $targetMachineId;
+        $targetLabel = $targetRaw !== ''
+            ? history_resolve_machine_label($pdo, $targetRaw, $targetId)
+            : history_machine_label($pdo, $targetId);
+        return history_format_allocation_note($partLabel, $sourceLabel, $targetLabel, $year, $projectLabel);
+    };
+
+    if (preg_match('/^alokacja — część wolumenu operacji #(\d+) przeniesiona na maszynę #(\d+), utworzono operację #\d+, rok (\d+)\.?$/u', $body, $m)) {
+        return $format((int) $m[1], (int) $m[2], (int) $m[3]);
+    }
+    if (preg_match('/^alokacja — część wolumenu detalu "/u', $body)) {
+        return $note;
+    }
+    if (preg_match('/^(?:Scenariusz: )?przeniesiono wolumen operacji #(\d+) na maszynę (.+) \(rok (\d+)\)\.?$/u', $body, $m)) {
+        return $format((int) $m[1], 0, (int) $m[3], (string) $m[2]);
+    }
+
+    return $note;
+}
+
 function write_no_content(): void
 {
     http_response_code(204);
@@ -55,8 +175,13 @@ function write_internal_number(mixed $raw, bool $required): ?string
         }
         return null;
     }
-    if (preg_match('/^\d+(\/\d+)?$/', $text) !== 1) {
-        json_response(400, ['error' => 'Numer maszyny: cyfry lub format np. 1134/1']);
+    $maxLen = 128;
+    if (function_exists('mb_strlen')) {
+        if (mb_strlen($text) > $maxLen) {
+            json_response(400, ['error' => 'Numer maszyny jest za długi (maks. ' . $maxLen . ' znaków)']);
+        }
+    } elseif (strlen($text) > $maxLen) {
+        json_response(400, ['error' => 'Numer maszyny jest za długi (maks. ' . $maxLen . ' znaków)']);
     }
     return $text;
 }
@@ -464,21 +589,43 @@ function write_designation_text(mixed $value): ?string
     return $text;
 }
 
-function write_designation_key(?string $sap, ?string $alias, ?string $free): string
+/** Klucz numeru SAP detalu: bez numeru porządkowego „ (n)”, bez końcówki .0, bez zer wiodących przy samym numerze. */
+function write_designation_sap_key(?string $sap): string
 {
-    $fold = fn(?string $value): string => function_exists('mb_strtolower') ? mb_strtolower((string) $value) : strtolower((string) $value);
-    return $fold($sap) . "\u{0001}" . $fold($alias) . "\u{0001}" . $fold($free);
+    $text = trim((string) $sap);
+    if ($text === '') {
+        return '';
+    }
+    $text = preg_replace('/\s*\(\d+\)\s*$/', '', $text) ?? $text;
+    $text = trim($text);
+    if ($text === '') {
+        return '';
+    }
+    if (preg_match('/^(-?\d+)\.0+$/', $text, $match) === 1) {
+        $text = $match[1];
+    }
+    $text = function_exists('mb_strtolower') ? mb_strtolower($text) : strtolower($text);
+    if (preg_match('/^-?\d+$/', $text) === 1) {
+        $negative = str_starts_with($text, '-');
+        $digits = ltrim($negative ? substr($text, 1) : $text, '0');
+        if ($digits === '') {
+            $digits = '0';
+        }
+        $text = $negative ? '-' . $digits : $digits;
+    }
+    return $text;
 }
 
-function write_designation_duplicate(PDO $pdo, ?string $sap, ?string $alias, ?string $free, ?int $excludeId): ?int
+function write_designation_sap_taken(PDO $pdo, string $sapKey, ?int $excludeId): ?int
 {
-    $target = write_designation_key($sap, $alias, $free);
-    foreach ($pdo->query('SELECT id, sap_number, alias, free_text, designation FROM part_designations') as $row) {
+    if ($sapKey === '') {
+        return null;
+    }
+    foreach ($pdo->query('SELECT id, sap_number FROM part_designations') as $row) {
         if ($excludeId !== null && (int) $row['id'] === $excludeId) {
             continue;
         }
-        $rowFree = write_designation_text($row['free_text']) ?? write_designation_text($row['designation']);
-        if (write_designation_key(write_designation_text($row['sap_number']), write_designation_text($row['alias']), $rowFree) === $target) {
+        if (write_designation_sap_key(write_designation_text($row['sap_number'])) === $sapKey) {
             return (int) $row['id'];
         }
     }
@@ -513,8 +660,10 @@ function write_designation(PDO $pdo, ?int $id): void
     if ($sap === null && $alias === null && $free === null) {
         json_response(400, ['error' => 'Wypełnij co najmniej jedno pole (Nr SAP, Alias lub Free text)']);
     }
-    if (write_designation_duplicate($pdo, $sap, $alias, $free, $id) !== null) {
-        json_response(409, ['error' => 'Detal o takim oznaczeniu już istnieje i nie został utworzony kolejny']);
+    $sapKey = write_designation_sap_key($sap);
+    $previousSapKey = $existing === null ? '' : write_designation_sap_key(write_designation_text($existing['sap_number'] ?? null));
+    if ($sapKey !== '' && ($id === null || $sapKey !== $previousSapKey) && write_designation_sap_taken($pdo, $sapKey, $id) !== null) {
+        json_response(409, ['error' => 'Detal o takim numerze SAP już istnieje i nie został utworzony kolejny']);
     }
     $designation = isset($body['designation']) && trim((string) $body['designation']) !== ''
         ? trim((string) $body['designation'])

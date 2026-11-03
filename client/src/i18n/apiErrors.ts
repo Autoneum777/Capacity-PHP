@@ -34,6 +34,7 @@ const ERROR_KEY_BY_MESSAGE: Record<string, string> = {
   'Nie udało się dodać detalu': 'errors.designationAddFailed',
   'Detal o takim oznaczeniu już istnieje i nie został utworzony kolejny': 'designations.duplicateExistsModal',
   'Detal o takim oznaczeniu już istnieje': 'designations.duplicateExistsModal',
+  'Detal o takim numerze SAP już istnieje i nie został utworzony kolejny': 'designations.duplicateExistsModal',
   'Nie udało się zapisać': 'errors.saveFailed',
   'Błąd ładowania detali': 'errors.designationsLoadFailed',
   'Błąd ładowania listy maszyn.': 'errors.machinesLoadFailed',
@@ -50,7 +51,25 @@ const ERROR_KEY_BY_MESSAGE: Record<string, string> = {
   'Plik Katowice_Data jest zaszyfrowany hasłem otwarcia. Podaj hasło w polu poniżej (nie da się go ominąć bez hasła).':
     'admin.ocuDataFilePasswordProtected',
   'Nie udało się odszyfrować pliku — sprawdź hasło otwarcia Katowice_Data.': 'admin.ocuDataFilePasswordWrong',
+  'Nie znaleziono maszyny docelowej.': 'errors.targetMachineNotFound',
+  'Wybierz inną maszynę.': 'errors.selectDifferentMachine',
+  'Brak danych capacity (ustawienia roku lub maszyna).': 'errors.noCapacityData',
+  'Dla roku bez wolumenu można przypisać detal tylko z przeniesieniem 0.': 'errors.volumeZeroAssignOnlyZero',
+  'Nie udało się zapisać alokacji.': 'errors.allocationSaveFailed',
+  'Operacja nie należy do tej maszyny lub brak w danym roku.': 'errors.operationNotOnMachineYear',
+  'Brak ruchu do cofnięcia.': 'errors.noMoveToUndo',
+  'Materiały są dostępne tylko dla maszyny bazowej.': 'errors.materialsBaselineOnly',
+  'Nie udało się zaimportować pliku routing.': 'errors.routingImportFailed',
 };
+
+function isInactiveMachineMessage(raw: string): boolean {
+  return (
+    raw.includes('jest nieaktywna') ||
+    raw.includes('is inactive') ||
+    raw.includes('ist inaktiv') ||
+    /Maszyna .+ jest nieaktywna/i.test(raw)
+  );
+}
 
 const PREFIX_RULES: { prefix: string; key: string }[] = [
   { prefix: 'Rok ', key: 'errors.yearVolumeTooLarge' },
@@ -67,6 +86,9 @@ export function translateApiError(locale: Locale, message: string | undefined | 
   if (raw.includes('FOREIGN KEY')) return translate(locale, 'errors.machineRequired');
   for (const { prefix, key } of PREFIX_RULES) {
     if (raw.startsWith(prefix)) return translate(locale, key, { detail: raw });
+  }
+  if (isInactiveMachineMessage(raw)) {
+    return translate(locale, 'errors.targetMachineInactive');
   }
   if (raw.toLowerCase().includes('password-protected') || raw.toLowerCase().includes('password protected')) {
     return translate(locale, 'admin.ocuDataFilePasswordProtected');

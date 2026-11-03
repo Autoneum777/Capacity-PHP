@@ -478,7 +478,7 @@ export default function BaselineMaterialsSection({
             externalVolumes: vols.map((v) => ({ year: v.year, weekly_volume: String(v.weekly_volume) })),
           }));
         })
-        .catch((e) => setError(te(e?.message) || 'Błąd ładowania wolumenów'));
+        .catch((e) => setError(te(e?.message) || t('errors.volumesLoadFailed')));
     }
   };
 

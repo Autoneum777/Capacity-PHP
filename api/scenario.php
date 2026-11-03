@@ -1339,18 +1339,70 @@ function scenario_execute_allocation(PDO $pdo, array $body): void
             'steps' => [$step],
         ];
     }
-    $label = trim((string) $targetRow['internal_number']) !== '' ? (string) $targetRow['internal_number'] : '#' . $targetId;
+    $partId = (int) ($operation['part_id'] ?? 0);
+    $projectId = (int) ($operation['project_id'] ?? 0);
+    $auditNote = history_format_allocation_note(
+        scenario_part_label($pdo, $bundle, $partId),
+        history_machine_label($pdo, (int) ($operation['machine_id'] ?? 0)),
+        history_machine_label($pdo, $targetId),
+        $year,
+        scenario_project_label($bundle, $projectId)
+    );
     scenario_audit(
         $bundle,
         user_login_label($opened['auth']['user']),
-        'Scenariusz: przeniesiono wolumen operacji #' . $operationId . ' na maszynę ' . $label . ' (rok ' . $year . ').',
-        (int) ($operation['project_id'] ?? 0),
-        (int) ($operation['part_id'] ?? 0),
+        $auditNote,
+        $projectId,
+        $partId,
         $targetId,
         $childId
     );
     scenario_save($pdo, $scenarioId, $bundle);
     json_response(200, ['success' => true]);
+}
+
+function scenario_project_label(array $bundle, int $projectId): string
+{
+    if ($projectId <= 0) {
+        return '';
+    }
+    foreach ($bundle['projects'] as $project) {
+        if ((int) ($project['id'] ?? 0) !== $projectId) {
+            continue;
+        }
+        $client = trim((string) ($project['client'] ?? ''));
+        $name = trim((string) ($project['name'] ?? ''));
+        if ($client !== '' && $name !== '') {
+            return $client . ' / ' . $name;
+        }
+        return $name !== '' ? $name : $client;
+    }
+    return '';
+}
+
+function scenario_history_entry(PDO $pdo, array $bundle, array $entry): array
+{
+    $projectId = (int) ($entry['project_id'] ?? 0);
+    $partId = (int) ($entry['part_id'] ?? 0);
+    $machineId = (int) ($entry['machine_id'] ?? 0);
+    $projectLabel = scenario_project_label($bundle, $projectId);
+    foreach ($bundle['projects'] as $project) {
+        if ((int) ($project['id'] ?? 0) === $projectId) {
+            $entry['client'] = (string) ($project['client'] ?? '');
+            $entry['project_name'] = (string) ($project['name'] ?? '');
+            break;
+        }
+    }
+    $entry['machine_label'] = $machineId > 0 ? history_machine_label($pdo, $machineId) : '';
+    $entry['detail_label'] = $partId > 0 ? scenario_part_label($pdo, $bundle, $partId) : '';
+    $entry['note'] = history_humanize_allocation_note($pdo, (string) ($entry['note'] ?? ''), [
+        'part_id' => $partId,
+        'part_label' => (string) ($entry['detail_label'] ?? ''),
+        'machine_id' => $machineId,
+        'project_id' => $projectId,
+        'project_label' => $projectLabel,
+    ], $bundle);
+    return $entry;
 }
 
 function scenario_part_label(PDO $pdo, array $bundle, int $partId): string
@@ -1392,24 +1444,8 @@ function scenario_machine_label(PDO $pdo, int $machineId): string
     if ($machineId <= 0) {
         return '';
     }
-    $stmt = $pdo->prepare('SELECT sap_number, internal_number FROM machines WHERE id = ?');
-    $stmt->execute([$machineId]);
-    $row = $stmt->fetch();
-    if (!$row) {
-        return (string) $machineId;
-    }
-    $sap = trim((string) ($row['sap_number'] ?? ''));
-    $internal = trim((string) ($row['internal_number'] ?? ''));
-    if ($sap !== '' && $internal !== '') {
-        return $sap . ' (' . $internal . ')';
-    }
-    if ($internal !== '') {
-        return $internal;
-    }
-    if ($sap !== '') {
-        return $sap;
-    }
-    return (string) $machineId;
+    $label = history_machine_label($pdo, $machineId);
+    return $label === '—' ? (string) $machineId : $label;
 }
 
 function scenario_endpoint_label(PDO $pdo, array $machineIds): string
@@ -1625,7 +1661,7 @@ function scenario_history(PDO $pdo, int $id): void
         json_response(404, ['error' => 'Not found']);
     }
     $bundle = scenario_decode((string) $row['snapshot']);
-    $rows = $bundle['audit_log'];
+    $rows = array_map(fn(array $entry): array => scenario_history_entry($pdo, $bundle, $entry), $bundle['audit_log']);
     usort($rows, fn(array $a, array $b): int => (int) ($b['id'] ?? 0) <=> (int) ($a['id'] ?? 0));
     $text = trim((string) ($_GET['text'] ?? ''));
     if ($text !== '') {

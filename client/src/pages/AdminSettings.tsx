@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, CAPACITY_DATA_IMPORT_SCHEMA_EXPECTED, MACHINES_IMPORT_CONFIRM } from '../api/client';
+import { api, CAPACITY_DATA_IMPORT_SCHEMA_EXPECTED } from '../api/client';
 import { useI18n } from '../context/I18nContext';
 import { useOcuMode } from '../context/OcuModeContext';
 import ServerStorageBrowser from '../components/admin/ServerStorageBrowser';
@@ -365,7 +365,12 @@ export default function AdminSettings() {
     api.admin
       .restoreFromBackup({ backup_file_path: pathToRestore })
       .then((result) => {
-        setMessage(`Przywrócono bazę z: ${result.restored_from}. Kopia bezpieczeństwa: ${result.safety_backup_file}`);
+        setMessage(
+          t('adminSettingsExtra.restoreSuccess', {
+            path: result.restored_from,
+            backup: result.safety_backup_file,
+          }),
+        );
         load();
       })
       .catch((e: any) => setError(te(e?.message) || t('adminSettingsExtra.restoreFailed')))
@@ -378,7 +383,7 @@ export default function AdminSettings() {
         ? BUNDLE_PARTIAL_KEYS.filter((k) => bundlePartial[k])
         : undefined;
     if (bundleImportMode === 'partial' && (onlyTables?.length ?? 0) === 0) {
-      setError('Zaznacz co najmniej jedną tabelę, aby pobrać częściowy szablon.');
+      setError(t('adminSettingsExtra.partialTemplateRequired'));
       return;
     }
     setBundleDownloading(true);
@@ -389,11 +394,11 @@ export default function AdminSettings() {
       .then(() =>
         setMessage(
           bundleImportMode === 'partial'
-            ? `Pobrano częściowy szablon (${onlyTables!.join(', ')}) — plik capacity_baza_szablon_wybrane.zip.`
-            : 'Pobrano pełną paczkę capacity_baza_szablon.zip (Excel + scenarios + call-offs).'
+            ? t('adminSettingsExtra.bundlePartialDownloaded', { tables: onlyTables!.join(', ') })
+            : t('adminSettingsExtra.templateDownloadedFull'),
         )
       )
-      .catch((e: any) => setError(e?.message || 'Nie udało się pobrać szablonu.'))
+      .catch((e: any) => setError(te(e?.message) || t('adminSettingsExtra.templateDownloadFailed')))
       .finally(() => setBundleDownloading(false));
   };
 
@@ -412,49 +417,39 @@ export default function AdminSettings() {
           setTemplateInfoError('');
         } catch (e: any) {
           setTemplateInfo(null);
-          setTemplateInfoError(e?.message || 'Manifest szablonu niedostępny.');
+          setTemplateInfoError(e?.message || t('adminSettingsExtra.templateManifestUnavailable'));
         }
         const schemaOk = diag.ok && diag.schemaTag === CAPACITY_DATA_IMPORT_SCHEMA_EXPECTED;
         const headerOk = backendSchemaHeader === CAPACITY_DATA_IMPORT_SCHEMA_EXPECTED;
-        const base =
-          'Pobrano szablon importu danych — oczekiwana nazwa pliku: capacity_szablon_import_danych_v2.xlsx (arkusz „Operacje”: tryb, wybor_po, identyfikator_detalu itd.). ';
+        const base = `${t('adminSettingsExtra.dataTemplateDownloaded')} `;
         if (schemaOk && headerOk) {
-          setMessage(base + 'Schemat operacje-v2 potwierdzony (nagłówek odpowiedzi i endpoint diagnostyczny).');
+          setMessage(base + t('adminSettingsExtra.schemaConfirmed'));
         } else if (schemaOk && !headerOk) {
-          setMessage(
-            base +
-              'Schemat operacje-v2 potwierdzony przez endpoint diagnostyczny. Nagłówka X-Capacity-Data-Import-Schema często nie widać przy starszej konfiguracji CORS — zaktualizuj backend i odśwież; sam plik powinien być już w układzie v2.',
-          );
+          setMessage(base + t('adminSettingsExtra.schemaConfirmedPartial'));
         } else if (!schemaOk && headerOk) {
-          setMessage(base + 'Nagłówek wskazuje operacje-v2; sprawdź endpoint diagnostyczny (możliwy problem sieci).');
+          setMessage(base + t('adminSettingsExtra.schemaHeaderOnly'));
         } else {
-          setMessage(
-            base +
-              'Uwaga: backend nie potwierdza operacje-v2 (404 lub stary kod). W katalogu server uruchom `npm run build`, potem `npm start`, albo `npm run dev`. Upewnij się, że frontend trafia na ten sam API co przeglądasz (proxy /api lub poprawne VITE_API_BASE).',
-          );
+          setMessage(base + t('adminSettingsExtra.schemaOldBackend'));
         }
       })
-      .catch((e: any) => setError(e?.message || 'Nie udało się pobrać szablonu danych.'))
+      .catch((e: any) => setError(te(e?.message) || t('adminSettingsExtra.dataTemplateFailed')))
       .finally(() => setDataDownloading(false));
   };
 
   const importData = () => {
+    const expectedConfirm = t('adminSettingsExtra.confirmImportData');
     if (!dataFile) {
-      setError('Wybierz plik .xlsx do wgrania.');
+      setError(t('adminSettingsExtra.dataFileRequired'));
       return;
     }
     const phrase = dataConfirm.trim();
-    if (phrase !== 'IMPORTUJ_DANE') {
-      setError('Aby zaimportować dane, wpisz dokładnie: IMPORTUJ_DANE (wielkość liter ma znaczenie).');
+    if (phrase !== expectedConfirm) {
+      setError(t('adminSettingsExtra.importConfirmRequired'));
       return;
     }
     const replaceAll = dataImportReplaceAll;
     if (
-      !window.confirm(
-        replaceAll
-          ? 'Tryb ZASTĄP: dane wejściowe w bazie zostaną dopasowane do pliku Excel — rekordy spoza pliku (maszyny, projekty, operacje itd.) zostaną usunięte. Przed importem system utworzy kopię zapasową. Kontynuować?'
-          : 'Tryb DODAJ: dane z pliku zostaną dopisane lub zaktualizowane; istniejące rekordy, których nie ma w Excelu, pozostaną. Brakujące operacje z arkusza „Operacje” zostaną utworzone. Przed importem system utworzy kopię zapasową. Kontynuować?',
-      )
+      !window.confirm(replaceAll ? t('adminSettingsExtra.importReplaceConfirm') : t('adminSettingsExtra.importAppendConfirm'))
     ) {
       return;
     }
@@ -474,11 +469,8 @@ export default function AdminSettings() {
           `operacje: +${c.operations_created} / ~${c.operations_updated}${c.operations_deleted ? ` / −${c.operations_deleted}` : ''}`,
           `fazy procesu: +${c.phases_created ?? 0}`,
         ];
-        let msg =
-          r.mode === 'replace'
-            ? 'Import danych zakończony (zastąpienie stanu z pliku).'
-            : 'Import danych zakończony (dopisanie i aktualizacja z pliku).';
-        if (r.backup_file) msg += ` Kopia zapasowa: ${r.backup_file}.`;
+        let msg = r.mode === 'replace' ? t('adminSettingsExtra.importDoneReplace') : t('adminSettingsExtra.importDoneAppend');
+        if (r.backup_file) msg += ` ${t('adminSettingsExtra.backupFileNote', { file: r.backup_file })}`;
         msg += ` ${parts.join(' · ')}`;
         if (r.warnings?.length) {
           msg += ` Uwagi (${r.warnings.length}): ${r.warnings.slice(0, 3).join(' ')}${r.warnings.length > 3 ? '…' : ''}`;
@@ -487,7 +479,7 @@ export default function AdminSettings() {
         setDataFile(null);
         setDataConfirm('');
       })
-      .catch((e: any) => setError(e?.message || 'Import danych nie powiódł się.'))
+      .catch((e: any) => setError(te(e?.message) || t('adminSettingsExtra.importFailed')))
       .finally(() => setDataImporting(false));
   };
 
@@ -508,7 +500,7 @@ export default function AdminSettings() {
       return;
     }
     const phrase = machinesConfirm.trim();
-    if (phrase !== MACHINES_IMPORT_CONFIRM) {
+    if (phrase !== t('adminSettingsExtra.confirmImportMachines')) {
       setError(t('adminSettingsExtra.machinesImportConfirmRequired'));
       return;
     }
@@ -527,7 +519,7 @@ export default function AdminSettings() {
         if (r.skipped > 0) parts.push(`${t('adminSettingsExtra.machinesSkipped')}: ${r.skipped}`);
         if (r.types_added?.length) parts.push(`${t('adminSettingsExtra.machinesTypesAdded')}: ${r.types_added.join(', ')}`);
         if (r.errors?.length) parts.push(`${t('adminSettingsExtra.machinesImportErrors')}: ${r.errors.slice(0, 5).join('; ')}${r.errors.length > 5 ? '…' : ''}`);
-        if (r.backup_file) parts.push(`Kopia zapasowa: ${r.backup_file}`);
+        if (r.backup_file) parts.push(t('adminSettingsExtra.backupFileNote', { file: r.backup_file }));
         setMessage(parts.join(' '));
         setMachinesFile(null);
         setMachinesConfirm('');
@@ -537,23 +529,20 @@ export default function AdminSettings() {
   };
 
   const clearDatabase = () => {
+    const expectedClear = t('adminSettingsExtra.confirmClearDb');
     const phrase = clearConfirm.trim();
-    if (phrase !== 'WYCZYSC_BAZE') {
-      setError('Aby wyczyścić bazę, wpisz dokładnie: WYCZYSC_BAZE (wielkość liter ma znaczenie).');
+    if (phrase !== expectedClear) {
+      setError(t('adminSettingsExtra.clearConfirmRequired'));
       return;
     }
     if (!clearCreateBackup && !clearBackupAck) {
-      setError('Zaznacz potwierdzenie posiadania kopii zapasowej albo włącz automatyczne utworzenie backupu przed wyczyszczeniem.');
+      setError(t('adminSettingsExtra.clearBackupAckRequired'));
       return;
     }
     const backupNote = clearCreateBackup
-      ? 'Przed wyczyszczeniem system utworzy automatyczną kopię zapasową bazy.'
-      : 'Nie tworzysz kopii automatycznej — upewnij się, że masz własny backup.';
-    if (
-      !window.confirm(
-        `Operacja jest nieodwracalna: wszystkie dane aplikacji (maszyny, projekty, operacje, scenariusze itd.) zostaną trwale usunięte. Ustawienia backupu w administracji pozostaną. ${backupNote} Kontynuować?`,
-      )
-    ) {
+      ? t('adminSettingsExtra.clearAutoBackup')
+      : t('adminSettingsExtra.clearNoAutoBackup');
+    if (!window.confirm(t('adminSettingsExtra.clearConfirmDialog', { backupNote }))) {
       return;
     }
     setClearing(true);
@@ -563,20 +552,21 @@ export default function AdminSettings() {
       .clearDatabase({ confirm: phrase, create_backup: clearCreateBackup })
       .then((r) => {
         const total = Object.values(r.rows_deleted).reduce((a, n) => a + n, 0);
-        let msg = `Baza wyczyszczona (${r.tables_cleared.length} tabel, usunięto ${total} wierszy).`;
-        if (r.backup_file) msg += ` Kopia zapasowa: ${r.backup_file}.`;
+        let msg = t('adminSettingsExtra.clearDone', { tables: r.tables_cleared.length, rows: total });
+        if (r.backup_file) msg += ` ${t('adminSettingsExtra.backupFileNote', { file: r.backup_file })}`;
         setMessage(msg);
         setClearConfirm('');
         setClearBackupAck(false);
         load();
       })
-      .catch((e: any) => setError(e?.message || 'Nie udało się wyczyścić bazy.'))
+      .catch((e: any) => setError(te(e?.message) || t('adminSettingsExtra.clearFailed')))
       .finally(() => setClearing(false));
   };
 
   const importBundle = () => {
+    const expectedBundle = t('adminSettingsExtra.confirmImportBundle');
     if (!bundleFile) {
-      setError('Wybierz plik .xlsx lub .zip (pełna paczka) do wgrania.');
+      setError(t('adminSettingsExtra.bundleFileRequired'));
       return;
     }
     const isZip =
@@ -584,23 +574,21 @@ export default function AdminSettings() {
       bundleFile.type === 'application/zip' ||
       bundleFile.type === 'application/x-zip-compressed';
     const phrase = bundleConfirm.trim();
-    if (phrase !== 'IMPORTUJ_BAZE') {
-      setError('Aby zaimportować, wpisz dokładnie: IMPORTUJ_BAZE (wielkość liter ma znaczenie).');
+    if (phrase !== expectedBundle) {
+      setError(t('adminSettingsExtra.bundleConfirmRequired'));
       return;
     }
     const onlyTables: BundlePartialKey[] =
       bundleImportMode === 'partial' ? BUNDLE_PARTIAL_KEYS.filter((k) => bundlePartial[k]) : [];
     if (bundleImportMode === 'partial' && onlyTables.length === 0) {
-      setError('Zaznacz co najmniej jedną tabelę do importu częściowego.');
+      setError(t('adminSettingsExtra.bundlePartialRequired'));
       return;
     }
-    const zipNote = isZip
-      ? ' Z paczki .zip zostaną też odtworzone duże snapshoty scenariuszy oraz katalog call-offs (pliki źródłowe).'
-      : '';
+    const zipNote = isZip ? t('adminSettingsExtra.bundleImportZipConfirmNote') : '';
     const confirmMsg =
       bundleImportMode === 'partial'
-        ? `Import częściowy: wyczyszczone i uzupełnione z pliku zostaną wyłącznie tabele: ${onlyTables.join(', ')}. Pozostałe dane w bazie nie są usuwane. W pliku muszą być arkusze o nazwach jak tabele.${zipNote} Wykonać backup przed kontynuacją. Kontynuować?`
-        : `Import z Excela usunie dane w większości tabel i wstawi zawartość pliku. Ustawienia backupu pozostaną.${zipNote} Zalecany jest świeży backup. Kontynuować?`;
+        ? t('adminSettingsExtra.bundlePartialConfirm', { tables: onlyTables.join(', ') }) + zipNote
+        : t('adminSettingsExtra.bundleFullConfirm') + zipNote;
     if (!window.confirm(confirmMsg)) {
       return;
     }
@@ -614,24 +602,27 @@ export default function AdminSettings() {
       .then((r) => {
         const counts = r?.rows_counts;
         if (counts == null || typeof counts !== 'object') {
-          throw new Error('Serwer nie zwrócił podsumowania importu.');
+          throw new Error(t('adminSettingsExtra.bundleImportNoSummary'));
         }
         const parts = Object.entries(counts)
           .filter(([, n]) => n > 0)
-          .map(([t, n]) => `${t}: ${n}`)
+          .map(([table, n]) => `${table}: ${n}`)
           .slice(0, 12);
         const more = Object.values(counts).filter((n) => n > 0).length > 12 ? '…' : '';
-        const prefix = r.partial ? 'Import częściowy zakończony. ' : 'Import zakończony. ';
+        const prefix = r.partial ? t('adminSettingsExtra.bundleDonePartial') : t('adminSettingsExtra.bundleDoneFull');
         const zipResult = r as Partial<{ call_offs_restored: number; scenario_snapshots_restored: number }>;
         const extra =
           zipResult.call_offs_restored != null
-            ? ` Odtworzono katalog call-offs (${zipResult.call_offs_restored} plików) i ${zipResult.scenario_snapshots_restored ?? 0} snapshotów scenariuszy z paczki ZIP.`
+            ? t('adminSettingsExtra.bundleZipRestoredNote', {
+                files: zipResult.call_offs_restored,
+                snapshots: zipResult.scenario_snapshots_restored ?? 0,
+              })
             : '';
-        setMessage(`${prefix}Wstawione wiersze (fragment): ${parts.join(', ')}${more}${extra}`);
+        setMessage(`${prefix}${parts.join(', ')}${more}${extra}`);
         setBundleFile(null);
         setBundleConfirm('');
       })
-      .catch((e: any) => setError(e?.message || 'Import nie powiódł się.'))
+      .catch((e: any) => setError(te(e?.message) || t('adminSettingsExtra.bundleImportFailed')))
       .finally(() => setBundleImporting(false));
   };
 
@@ -846,7 +837,9 @@ export default function AdminSettings() {
         </label>
         <label style={{ display: 'block', marginBottom: 12, fontSize: 14 }}>
           {t('adminSettingsExtra.machinesImportConfirmLabel')}{' '}
-          <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4 }}>{MACHINES_IMPORT_CONFIRM}</code>
+          <code style={{ background: '#f5f5f5', padding: '2px 6px', borderRadius: 4 }}>
+            {t('adminSettingsExtra.confirmImportMachines')}
+          </code>
           <input
             type="text"
             value={machinesConfirm}
@@ -1306,7 +1299,7 @@ export default function AdminSettings() {
           onClick={clearDatabase}
           disabled={
             clearing ||
-            clearConfirm.trim() !== 'WYCZYSC_BAZE' ||
+            clearConfirm.trim() !== t('adminSettingsExtra.confirmClearDb') ||
             (!clearCreateBackup && !clearBackupAck)
           }
           style={{
@@ -1316,11 +1309,11 @@ export default function AdminSettings() {
             border: 'none',
             borderRadius: 4,
             cursor:
-              clearing || clearConfirm.trim() !== 'WYCZYSC_BAZE' || (!clearCreateBackup && !clearBackupAck)
+              clearing || clearConfirm.trim() !== t('adminSettingsExtra.confirmClearDb') || (!clearCreateBackup && !clearBackupAck)
                 ? 'not-allowed'
                 : 'pointer',
             opacity:
-              clearing || clearConfirm.trim() !== 'WYCZYSC_BAZE' || (!clearCreateBackup && !clearBackupAck) ? 0.65 : 1,
+              clearing || clearConfirm.trim() !== t('adminSettingsExtra.confirmClearDb') || (!clearCreateBackup && !clearBackupAck) ? 0.65 : 1,
           }}
         >
           {clearing ? t('adminSettingsExtra.clearing') : t('adminSettingsExtra.clearDatabase')}

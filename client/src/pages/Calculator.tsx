@@ -4443,15 +4443,17 @@ type TargetPercentGroupPlan = {
 };
 
 /**
- * Plan dla wielu referencji: pełne detale najpierw, a ewentualny podział
- * wyłącznie na detalu o największym wolumenie w pierwszym wybranym roku.
+ * Plan dla wielu referencji, liczony niezależnie dla każdego roku: najpierw detale, które da się
+ * przenieść w całości (od najmniejszego obciążenia), a na końcu dzielony jest wyłącznie jeden —
+ * pierwszy, który już by nie zmieścił się w całości (zazwyczaj kolejny co do wielkości po pełnych).
+ * Rosnąca kolejność gwarantuje znalezienie wykonalnego miksu zawsze, gdy wybrane detale łącznie
+ * mają wystarczające obciążenie (desiredLoad <= totalLoad) — nie ma „niewygodnych" kombinacji.
  */
 function buildTargetPercentGroupPlan(
   groupOps: any[],
   hint: AllocationLoadHint,
   targetPercent: number,
-  weeklyOf: (op: any) => number,
-  fixed?: Pick<TargetPercentGroupPlan, 'fullGroupKeys' | 'partialGroupKey'>
+  weeklyOf: (op: any) => number
 ): TargetPercentGroupPlan {
   const contributionByOp = new Map(
     (hint.operation_contributions ?? []).map((row) => [Number(row.operation_id), Number(row.load_percent) || 0])
@@ -4472,36 +4474,27 @@ function buildTargetPercentGroupPlan(
   }
 
   const desiredLoad = Math.max(0, hint.current_load_percent - targetPercent);
-  const largest = [...rows].sort((a, b) => b.weekly - a.weekly || a.key.localeCompare(b.key))[0];
-  let fullGroupKeys: string[];
-  let partialGroupKey: string | null;
+  const ordered = [...rows].sort((a, b) => a.load - b.load || a.weekly - b.weekly || a.key.localeCompare(b.key));
 
-  if (fixed) {
-    fullGroupKeys = fixed.fullGroupKeys.filter((key) => groups.has(key));
-    partialGroupKey = fixed.partialGroupKey && groups.has(fixed.partialGroupKey) ? fixed.partialGroupKey : null;
-  } else {
-    let remaining = desiredLoad;
-    fullGroupKeys = [];
-    const fullCandidates = rows
-      .filter((row) => row.key !== largest?.key)
-      .sort((a, b) => a.load - b.load || a.weekly - b.weekly || a.key.localeCompare(b.key));
-    for (const row of fullCandidates) {
-      if (row.load <= remaining + 1e-6) {
-        fullGroupKeys.push(row.key);
-        remaining -= row.load;
-      }
+  const fullGroupKeys: string[] = [];
+  let partialGroupKey: string | null = null;
+  let remaining = desiredLoad;
+  for (const row of ordered) {
+    if (remaining <= 1e-6) break;
+    if (row.load <= remaining + 1e-6) {
+      fullGroupKeys.push(row.key);
+      remaining -= row.load;
+    } else {
+      partialGroupKey = row.key;
+      break;
     }
-    partialGroupKey = remaining > 1e-6 ? largest?.key ?? null : null;
   }
 
+  const impossible = desiredLoad > totalLoad + 1e-6;
   const fullLoad = fullGroupKeys.reduce((sum, key) => sum + (groups.get(key)?.load ?? 0), 0);
   const fullWeekly = fullGroupKeys.reduce((sum, key) => sum + (groups.get(key)?.weekly ?? 0), 0);
   const remainingLoad = desiredLoad - fullLoad;
   const partial = partialGroupKey ? groups.get(partialGroupKey) : undefined;
-  const impossible =
-    desiredLoad > totalLoad + 1e-6 ||
-    remainingLoad < -1e-6 ||
-    (remainingLoad > 1e-6 && (!partial || partial.load <= 1e-9 || remainingLoad > partial.load + 1e-6));
   const partialFraction =
     !impossible && partial && remainingLoad > 1e-9 ? Math.min(1, remainingLoad / partial.load) : 0;
   const orderedGroupKeys = [...fullGroupKeys, ...(partialGroupKey ? [partialGroupKey] : [])];
@@ -4645,8 +4638,12 @@ function AllocationModal({
   const selectedGroupKeySet = useMemo(() => new Set(selectedGroupKeys), [selectedGroupKeys]);
 
   useEffect(() => {
-    api.machines.list({ status: 'active' }).then(setAllMachinesList);
-  }, []);
+    const params =
+      scenarioId != null && scenarioId > 0
+        ? { scenarioId, statuses: 'active' as const }
+        : { status: 'active' as const };
+    api.machines.list(params).then(setAllMachinesList);
+  }, [scenarioId]);
 
   useEffect(() => {
     setYear((prev) => (preselectedYear != null ? preselectedYear : prev));
@@ -5274,21 +5271,8 @@ function AllocationModal({
         })
       );
 
-      const anchorData = yearData[0];
-      const targetAnchorPlan =
-        transferMode === 'targetPercent' &&
-        selectedGroups.length > 1 &&
-        anchorData?.hintForYear != null
-          ? buildTargetPercentGroupPlan(
-              anchorData.groupOps,
-              anchorData.hintForYear,
-              sourceTargetLoadPercent,
-              operationWeekly
-            )
-          : null;
-      if (targetAnchorPlan?.insufficient) {
-        throw new Error(t('calculator.allocation.targetPercentInsufficient', { percent: sourceTargetLoadPercent }));
-      }
+      // Każdy wybrany rok dostaje własny, niezależnie policzony mix (inne detale mogą być pełne/dzielone
+      // w różnych latach, bo obciążenie poszczególnych detali zmienia się rok do roku).
       const targetPlanForYear = (data: (typeof yearData)[number]): TargetPercentGroupPlan | null => {
         if (transferMode !== 'targetPercent' || selectedGroups.length <= 1 || data.hintForYear == null) {
           return null;
@@ -5297,8 +5281,7 @@ function AllocationModal({
           data.groupOps,
           data.hintForYear,
           sourceTargetLoadPercent,
-          operationWeekly,
-          targetAnchorPlan ?? undefined
+          operationWeekly
         );
         if (plan.insufficient) {
           throw new Error(

@@ -1146,6 +1146,16 @@ function admin_history(PDO $pdo): array
         }
         $row['machine_label'] = admin_machine_label($row);
         $row['detail_label'] = admin_detail_label($row);
+        $client = trim((string) ($row['client'] ?? ''));
+        $projectName = trim((string) ($row['project_name'] ?? ''));
+        $projectLabel = $client !== '' && $projectName !== '' ? $client . ' / ' . $projectName : ($projectName !== '' ? $projectName : $client);
+        $row['note'] = history_humanize_allocation_note($pdo, (string) ($row['note'] ?? ''), [
+            'part_id' => (int) ($row['part_id'] ?? 0),
+            'part_label' => (string) $row['detail_label'],
+            'machine_id' => (int) ($row['machine_id'] ?? 0),
+            'project_id' => (int) ($row['project_id'] ?? 0),
+            'project_label' => $projectLabel,
+        ]);
         $rows[] = $row;
     }
     return $rows;

@@ -104,6 +104,14 @@ function calloff_quantity(array $monthly, int $partId, int $year, int $month): f
     return (float) ($monthly[$partId][$year][$month] ?? 0);
 }
 
+/** Zamienia bucket detali (mapa project_id|label => wiersz) na posortowaną listę jak detail_breakdown w Kalkulatorze. */
+function calloff_detail_breakdown_rows(array $bucket): array
+{
+    $rows = array_values($bucket);
+    usort($rows, fn(array $a, array $b): int => $b['contribution_percent'] <=> $a['contribution_percent']);
+    return $rows;
+}
+
 /** Łączy bucket materiałowy (kształt jak w calc_material_bucket_add) z innym buckietem — do sumowania miesięcy w roku. */
 function calloff_merge_material_buckets(array &$target, array $source): void
 {
@@ -134,7 +142,7 @@ function calloff_merge_material_buckets(array &$target, array $source): void
  * zużycie materiału na podstawie ilości z pliku SAP (nie kopiuje wartości ze strony capacity bazowej) —
  * wymaga przekazania $baseline = baseline_bundle($pdo), żeby nie odpytywać bazy w każdym miesiącu.
  */
-function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $monthly, array $statuses, array $types, ?array $onlyIds, array $baseline): array
+function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $monthly, array $statuses, array $types, ?array $onlyIds, array $baseline, string $mode): array
 {
     $machines = calculator_filtered_machines($pdo, $statuses, $types, $onlyIds);
     if ($machines === []) {
@@ -155,6 +163,7 @@ function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $mon
         $required = 0.0;
         $byClient = [];
         $materialBucket = [];
+        $detailBucket = [];
         if ($isBaselineMachine) {
             foreach (baseline_external_rows($machine, $year, $baseline) as $materialRow) {
                 $required += (float) $materialRow['required_seconds'];
@@ -185,6 +194,28 @@ function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $mon
             $byClient[$client]['required'] = ($byClient[$client]['required'] ?? 0) + $seconds;
             $byClient[$client]['projects'][$projectId]['required'] += $seconds;
             $byClient[$client]['projects'][$projectId]['details'][$label] = ($byClient[$client]['projects'][$projectId]['details'][$label] ?? 0) + $seconds;
+            $detailLabel = detail_label([
+                'sap_number' => $op['detail_sap_number'] ?? null,
+                'alias' => $op['detail_alias'] ?? null,
+                'free_text' => $op['detail_free_text'] ?? null,
+                'designation' => $op['detail_designation'] ?? null,
+                'id' => $partId,
+            ], $mode);
+            $detailKey = $projectId . '|' . $detailLabel;
+            if (!isset($detailBucket[$detailKey])) {
+                $detailBucket[$detailKey] = [
+                    'project_label' => calc_project_label($op),
+                    'detail_label' => $detailLabel,
+                    'required' => 0.0,
+                    'volume' => 0.0,
+                    'has_rfq' => false,
+                ];
+            }
+            $detailBucket[$detailKey]['required'] += $seconds;
+            $detailBucket[$detailKey]['volume'] += $weekly;
+            if (strtoupper((string) ($op['project_status'] ?? '')) === 'RFQ') {
+                $detailBucket[$detailKey]['has_rfq'] = true;
+            }
             if ($isBaselineMachine) {
                 $projectLabel = trim($client . ' / ' . (string) ($op['project_name'] ?? ''));
                 foreach ($demand['materials'] as $materialRow) {
@@ -194,6 +225,16 @@ function calloff_machine_month_loads(PDO $pdo, int $year, int $month, array $mon
         }
         $loads[$machineId] = $availability > 0 ? (int) round(($required / $availability) * 100) : ($required > 0 ? 100 : 0);
         $details[$machineId] = ['required' => $required, 'availability' => $availability, 'clients' => $byClient];
+        $details[$machineId]['detail_breakdown'] = [];
+        foreach ($detailBucket as $detailKey => $entry) {
+            $details[$machineId]['detail_breakdown'][$detailKey] = [
+                'project_label' => $entry['project_label'],
+                'detail_label' => $entry['detail_label'],
+                'contribution_percent' => $availability > 0 ? ($entry['required'] / $availability) * 100 : 0.0,
+                'volume_quantity' => $entry['volume'],
+                'has_rfq' => $entry['has_rfq'],
+            ];
+        }
         if ($isBaselineMachine) {
             $details[$machineId]['material_bucket'] = $materialBucket;
         }
@@ -205,26 +246,47 @@ function calloff_year_loads(PDO $pdo, int $id, int $yearFrom, int $yearTo, array
 {
     $monthly = calloff_monthly($pdo, $id, $yearFrom, $yearTo);
     $baseline = baseline_bundle($pdo);
+    $mode = reference_mode($pdo);
     $byYear = [];
     $materialBreakdownByYear = [];
+    $detailBreakdownByYear = [];
     for ($year = $yearFrom; $year <= $yearTo; $year++) {
         $span = calloff_month_span($monthly, $year);
         $sums = [];
         $counts = [];
         $yearBuckets = [];
         $availabilities = [];
+        $detailSums = [];
         if ($span !== null) {
             for ($month = $span['from']; $month <= $span['to']; $month++) {
-                $monthLoads = calloff_machine_month_loads($pdo, $year, $month, $monthly, $statuses, $types, $onlyIds, $baseline);
+                $monthLoads = calloff_machine_month_loads($pdo, $year, $month, $monthly, $statuses, $types, $onlyIds, $baseline, $mode);
                 foreach ($monthLoads['loads'] as $machineId => $load) {
                     $sums[$machineId] = ($sums[$machineId] ?? 0) + $load;
                     $counts[$machineId] = ($counts[$machineId] ?? 0) + 1;
                 }
                 foreach ($monthLoads['details'] as $machineId => $detail) {
+                    $availabilities[$machineId] = (float) ($detail['availability'] ?? 0);
+                    // Każdy miesiąc liczy się do średniej za rok (tak jak load_percent), nawet gdy w danym
+                    // miesiącu detal nie występuje — inaczej średnia byłaby zawyżona.
+                    foreach ($detail['detail_breakdown'] ?? [] as $detailKey => $row) {
+                        if (!isset($detailSums[$machineId][$detailKey])) {
+                            $detailSums[$machineId][$detailKey] = [
+                                'project_label' => $row['project_label'],
+                                'detail_label' => $row['detail_label'],
+                                'percent_sum' => 0.0,
+                                'volume_sum' => 0.0,
+                                'has_rfq' => false,
+                            ];
+                        }
+                        $detailSums[$machineId][$detailKey]['percent_sum'] += (float) $row['contribution_percent'];
+                        $detailSums[$machineId][$detailKey]['volume_sum'] += (float) $row['volume_quantity'];
+                        if ($row['has_rfq']) {
+                            $detailSums[$machineId][$detailKey]['has_rfq'] = true;
+                        }
+                    }
                     if (!isset($detail['material_bucket'])) {
                         continue;
                     }
-                    $availabilities[$machineId] = (float) ($detail['availability'] ?? 0);
                     if (!isset($yearBuckets[$machineId])) {
                         $yearBuckets[$machineId] = [];
                     }
@@ -240,8 +302,23 @@ function calloff_year_loads(PDO $pdo, int $id, int $yearFrom, int $yearTo, array
         foreach ($yearBuckets as $machineId => $bucket) {
             $materialBreakdownByYear[$year][$machineId] = calc_material_breakdown($bucket, $availabilities[$machineId] ?? 0);
         }
+        $detailBreakdownByYear[$year] = [];
+        foreach ($detailSums as $machineId => $byKey) {
+            $cnt = $counts[$machineId] ?? 0;
+            $rows = [];
+            foreach ($byKey as $entry) {
+                $rows[] = [
+                    'project_label' => $entry['project_label'],
+                    'detail_label' => $entry['detail_label'],
+                    'contribution_percent' => $cnt > 0 ? round($entry['percent_sum'] / $cnt, 2) : 0.0,
+                    'volume_quantity' => $cnt > 0 ? round($entry['volume_sum'] / $cnt, 2) : 0.0,
+                    'has_rfq' => $entry['has_rfq'],
+                ];
+            }
+            $detailBreakdownByYear[$year][$machineId] = calloff_detail_breakdown_rows($rows);
+        }
     }
-    return ['loads' => $byYear, 'material_breakdown' => $materialBreakdownByYear];
+    return ['loads' => $byYear, 'material_breakdown' => $materialBreakdownByYear, 'detail_breakdown' => $detailBreakdownByYear];
 }
 
 function calloff_source(PDO $pdo): PDO
@@ -280,6 +357,7 @@ function calloff_calculator(PDO $pdo, int $id): void
     $loadsResult = calloff_year_loads($source, $id, $yearFrom, $yearTo, $statuses, $types, $onlyIds);
     $loads = $loadsResult['loads'];
     $materialBreakdownByYear = $loadsResult['material_breakdown'];
+    $detailBreakdownByYear = $loadsResult['detail_breakdown'];
     foreach ($payload as &$machine) {
         $machineId = (int) $machine['machine_id'];
         foreach ($machine['years'] as $year => &$cell) {
@@ -288,7 +366,7 @@ function calloff_calculator(PDO $pdo, int $id): void
             $cell['call_off_annual_load_percent'] = $load;
             $cell['call_off_annual_required_sec_per_week'] = 0;
             $cell['call_off_annual_availability_sec_per_week'] = 0;
-            $cell['call_off_detail_breakdown'] = [];
+            $cell['call_off_detail_breakdown'] = $detailBreakdownByYear[(int) $year][$machineId] ?? [];
             $cell['call_off_material_breakdown'] = $materialBreakdownByYear[(int) $year][$machineId] ?? [];
         }
         unset($cell);
@@ -334,13 +412,17 @@ function calloff_period(PDO $pdo, int $id): void
     $statuses = calculator_statuses();
     $onlyIds = calculator_scope_ids($source);
     $baseline = baseline_bundle($source);
+    $mode = reference_mode($source);
     $byMonth = [];
     $materialBreakdownByMonth = [];
+    $detailBreakdownByMonth = [];
     for ($month = 1; $month <= 12; $month++) {
-        $monthResult = calloff_machine_month_loads($source, $year, $month, $monthly, $statuses, $types, $onlyIds, $baseline);
+        $monthResult = calloff_machine_month_loads($source, $year, $month, $monthly, $statuses, $types, $onlyIds, $baseline, $mode);
         $byMonth[$month] = $monthResult['loads'];
         $materialBreakdownByMonth[$month] = [];
+        $detailBreakdownByMonth[$month] = [];
         foreach ($monthResult['details'] as $machineId => $detail) {
+            $detailBreakdownByMonth[$month][$machineId] = calloff_detail_breakdown_rows($detail['detail_breakdown'] ?? []);
             if (!isset($detail['material_bucket'])) {
                 continue;
             }
@@ -352,11 +434,11 @@ function calloff_period(PDO $pdo, int $id): void
         foreach ($machine['months'] as $month => &$cell) {
             $load = (int) ($byMonth[(int) $month][$machineId] ?? 0);
             $cell['call_off_load_percent'] = $load;
-            $cell['call_off_detail_breakdown'] = [];
+            $cell['call_off_detail_breakdown'] = $detailBreakdownByMonth[(int) $month][$machineId] ?? [];
             $cell['call_off_material_breakdown'] = $materialBreakdownByMonth[(int) $month][$machineId] ?? [];
             foreach ($cell['weeks'] as &$week) {
                 $week['call_off_load_percent'] = $load;
-                $week['call_off_detail_breakdown'] = [];
+                $week['call_off_detail_breakdown'] = $cell['call_off_detail_breakdown'];
                 $week['call_off_material_breakdown'] = $materialBreakdownByMonth[(int) $month][$machineId] ?? [];
             }
             unset($week);
@@ -399,11 +481,12 @@ function calloff_breakdown(PDO $pdo, array $machines, int $year, ?int $month): a
     $statuses = calculator_statuses();
     $onlyIds = array_map('intval', array_keys($machines));
     $baseline = baseline_bundle($pdo);
+    $mode = reference_mode($pdo);
     $sum = 0;
     $count = 0;
     $clients = [];
     for ($item = $monthFrom; $item <= $monthTo; $item++) {
-        $result = calloff_machine_month_loads($pdo, $year, $item, $monthly, $statuses, $types, $onlyIds, $baseline);
+        $result = calloff_machine_month_loads($pdo, $year, $item, $monthly, $statuses, $types, $onlyIds, $baseline, $mode);
         foreach ($result['loads'] as $load) {
             $sum += $load;
             $count++;

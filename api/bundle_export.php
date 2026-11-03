@@ -26,8 +26,9 @@ function handle_bundle_export(string $method, string $path, PDO $pdo): bool
     require_permission($pdo, 'admin_database.view');
     @set_time_limit(300);
     $only = bundle_only_tables($_GET['onlyTables'] ?? null);
+    $locale = import_request_locale();
     try {
-        [$bytes, $partial] = bundle_export_build($pdo, $only);
+        [$bytes, $partial] = bundle_export_build($pdo, $only, $locale);
     } catch (Throwable $e) {
         json_response(500, ['error' => $e->getMessage()]);
     }
@@ -41,7 +42,7 @@ function handle_bundle_export(string $method, string $path, PDO $pdo): bool
 }
 
 /** @return array{0: string, 1: bool} [bajty .zip, czy eksport był częściowy] */
-function bundle_export_build(PDO $pdo, array $only): array
+function bundle_export_build(PDO $pdo, array $only, string $locale = 'en'): array
 {
     $order = bundle_import_order($pdo);
     $allTables = bundle_without_auth($order);
@@ -82,7 +83,7 @@ function bundle_export_build(PDO $pdo, array $only): array
         $sheetName = strlen($table) > 31 ? substr($table, 0, 31) : $table;
         $sheets[] = ['name' => $sheetName, 'headers' => $cols, 'rows' => $rows];
     }
-    $sheets[] = ['name' => BUNDLE_README_SHEET, 'headers' => ['Instrukcja'], 'rows' => bundle_export_instruction_rows($partial, $tables)];
+    $sheets[] = ['name' => BUNDLE_README_SHEET, 'headers' => [import_readme_header($locale)], 'rows' => bundle_export_instruction_rows($partial, $tables, $locale)];
 
     $excelBytes = data_import_xlsx_build($sheets);
 
@@ -134,15 +135,3 @@ function bundle_export_add_call_offs(ZipArchive $zip): void
     }
 }
 
-function bundle_export_instruction_rows(bool $partial, array $tables): array
-{
-    $rows = [
-        ['Paczka Capacity — eksport danych (Excel + scenarios + call-offs). Konta, role i hasła NIE są eksportowane.'],
-        ['Ten plik .zip można wgrać z powrotem w Ustawienia administracyjne → Import paczki .zip.'],
-        [''],
-    ];
-    $rows[] = $partial
-        ? ['Eksport częściowy — tabele: ' . implode(', ', $tables)]
-        : ['Eksport pełny — wszystkie tabele danych (bez kont/ról/haseł).'];
-    return $rows;
-}

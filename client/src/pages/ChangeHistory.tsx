@@ -28,7 +28,7 @@ const defaultFilters: Filters = {
 };
 
 export default function ChangeHistory() {
-  const { t, locale } = useI18n();
+  const { t, te, locale } = useI18n();
   const [searchParams] = useSearchParams();
   const { activeScenarioId: ctxScenarioId, appSection } = useScenarioMode();
   const scenarioFromQuery = searchParams.get('scenarioId');
@@ -87,7 +87,7 @@ export default function ChangeHistory() {
       .then(setRows)
       .catch((e: any) => {
         setRows([]);
-        setError(e?.message || t('history.loadError'));
+        setError(te(e?.message) || t('history.loadError'));
       })
       .finally(() => setLoading(false));
   };
@@ -121,7 +121,7 @@ export default function ChangeHistory() {
       load();
       loadMoves();
     } catch (e: any) {
-      setUndoError(e?.message || 'Nie udało się cofnąć ruchu.');
+      setUndoError(te(e?.message) || t('common.saveError'));
     } finally {
       setUndoBusy(false);
     }
@@ -195,21 +195,28 @@ export default function ChangeHistory() {
       )}
       {scopedScenarioId != null && (
         <div style={{ marginBottom: '1rem', padding: '0.75rem 1rem', background: '#f5f9fc', border: '1px solid #d0e3f0', borderRadius: 8 }}>
-          <h2 style={{ margin: '0 0 0.5rem', fontSize: '1rem' }}>Ruchy do cofnięcia</h2>
-          <p style={{ margin: '0 0 0.5rem', fontSize: 13, color: '#555' }}>
-            Najnowszy ruch jest na górze. Cofnięcie dotyczy całego kliknięcia (alokacja albo zmiana wolumenu) i tylko ostatniego ruchu.
-          </p>
+          <h2 style={{ margin: '0 0 0.5rem', fontSize: '1rem' }}>{t('history.undoMovesTitle')}</h2>
+          <p style={{ margin: '0 0 0.5rem', fontSize: 13, color: '#555' }}>{t('history.undoMovesHint')}</p>
           {undoError ? <p style={{ color: 'var(--cap-red)', fontSize: 13 }}>{undoError}</p> : null}
           {moves.length === 0 ? (
-            <p style={{ margin: 0, fontSize: 13, color: '#777' }}>Brak zapisanych ruchów do cofnięcia.</p>
+            <p style={{ margin: 0, fontSize: 13, color: '#777' }}>{t('history.noUndoMoves')}</p>
           ) : (
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 14 }}>
               {moves.map((move) => (
                 <li key={`${move.kind || 'allocation'}-${move.id}`} style={{ marginBottom: 6 }}>
                   <span>
                     {move.kind === 'volume'
-                      ? `Wolumen ${move.scopeLabel || 'produkcyjny'} ${move.partLabel || 'detalu'}, lata ${move.years.join(', ') || '—'}`
-                      : `${move.partLabel || 'detal'} — ${move.sourceLabel || '—'} → ${move.targetLabel || '—'}, lata ${move.years.join(', ') || '—'}`}
+                      ? t('history.moveVolume', {
+                          scope: move.scopeLabel || t('calculator.volumeModeProduction'),
+                          part: move.partLabel || '—',
+                          years: move.years.join(', ') || '—',
+                        })
+                      : t('history.moveAllocation', {
+                          part: move.partLabel || '—',
+                          source: move.sourceLabel || '—',
+                          target: move.targetLabel || '—',
+                          years: move.years.join(', ') || '—',
+                        })}
                     {move.at ? ` (${move.at.slice(0, 16).replace('T', ' ')})` : ''}
                   </span>
                   {move.canUndo ? (
@@ -227,7 +234,7 @@ export default function ChangeHistory() {
                         cursor: undoBusy ? 'not-allowed' : 'pointer',
                       }}
                     >
-                      {undoBusy ? 'Cofanie…' : 'Cofnij'}
+                      {undoBusy ? t('history.undoBusy') : t('history.undo')}
                     </button>
                   ) : null}
                 </li>

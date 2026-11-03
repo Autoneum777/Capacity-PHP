@@ -207,6 +207,19 @@ function allocation_candidates(PDO $pdo, int $machineId): void
         $ids[$altId] = true;
         $altIds[] = $altId;
     }
+    $scenarioId = (int) ($_GET['scenarioId'] ?? 0);
+    if ($scenarioId > 0 && isset($cells[$machineId])) {
+        $sourceType = trim((string) ($cells[$machineId]['type'] ?? ''));
+        foreach (array_keys($cells) as $cid) {
+            if ($cid === $machineId) {
+                continue;
+            }
+            if ($sourceType !== '' && trim((string) ($cells[$cid]['type'] ?? '')) !== $sourceType) {
+                continue;
+            }
+            $ids[$cid] = true;
+        }
+    }
     $sourceLocation = $cells[$machineId]['location'];
     $build = function (bool $respectLocation) use ($ids, $cells, $year, $maxLoad, $sourceLocation): array {
         $result = [];
@@ -495,13 +508,29 @@ function allocation_execute(PDO $pdo): void
         ]);
         $childId = (int) $pdo->lastInsertId();
         allocation_seed_years($pdo, (int) $op['project_id'], $operationId, $childId, $year, $moveWeekly, 'weekly', $month, $week);
-        $targetLabel = trim((string) $targetRow['internal_number']) !== '' ? (string) $targetRow['internal_number'] : '#' . $targetId;
+        $projectId = (int) $op['project_id'];
+        $partId = (int) $op['part_id'];
+        $projectLabel = '';
+        $projectStmt = $pdo->prepare('SELECT client, name FROM projects WHERE id = ?');
+        $projectStmt->execute([$projectId]);
+        $projectRow = $projectStmt->fetch();
+        if ($projectRow) {
+            $client = trim((string) ($projectRow['client'] ?? ''));
+            $name = trim((string) ($projectRow['name'] ?? ''));
+            $projectLabel = $client !== '' && $name !== '' ? $client . ' / ' . $name : ($name !== '' ? $name : $client);
+        }
         write_note(
             $pdo,
-            (int) $op['project_id'],
-            'Automatyczna zmiana: przeniesiono wolumen operacji #' . $operationId . ' na maszynę ' . $targetLabel . ' (rok ' . $year . ').',
+            $projectId,
+            history_format_allocation_note(
+                write_part_label($pdo, $partId),
+                history_machine_label($pdo, (int) $op['machine_id']),
+                history_machine_label($pdo, $targetId),
+                $year,
+                $projectLabel
+            ),
             user_login_label($auth['user']),
-            (int) $op['part_id'],
+            $partId,
             $targetId,
             $childId
         );

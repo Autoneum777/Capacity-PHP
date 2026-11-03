@@ -72,10 +72,15 @@ require_once __DIR__ . '/writes.php';
 require_once __DIR__ . '/scenario.php';
 require_once __DIR__ . '/allocation.php';
 require_once __DIR__ . '/calloffs.php';
+require_once __DIR__ . '/machine_groups.php';
 require_once __DIR__ . '/admin.php';
 
 if (str_starts_with($path, '/auth/') || $path === '/auth') {
     handle_auth($method, $path);
+}
+
+if (handle_machine_groups($method, $path)) {
+    exit;
 }
 
 if (handle_reads($method, $path)) {

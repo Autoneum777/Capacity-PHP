@@ -48,6 +48,22 @@ export const extendedDe: TranslationTree = {
     yearsVolumeZero: '{{detail}}',
     operationMissingYears: '{{detail}}',
     yearVolumeTooLargeShort: '{{detail}}',
+    targetMachineNotFound: 'Zielmaschine nicht gefunden.',
+    targetMachineInactive: 'Zielmaschine ist inaktiv. Volumen kann nur auf aktive oder RFQ-Maschine verschoben werden.',
+    selectDifferentMachine: 'Wählen Sie eine andere Maschine.',
+    noCapacityData: 'Keine Kapazitätsdaten (Jahreseinstellungen oder Maschine).',
+    volumeZeroAssignOnlyZero: 'Bei Jahr ohne Volumen ist nur Zuweisung mit Transfer 0 möglich.',
+    allocationSaveFailed: 'Allokation konnte nicht gespeichert werden.',
+    operationNotOnMachineYear: 'Operation gehört nicht zu dieser Maschine oder hat im Jahr kein Volumen.',
+    noMoveToUndo: 'Kein Schritt zum Rückgängigmachen.',
+    fileTooLarge: 'Datei ist für diesen Upload zu groß — verkleinern und erneut versuchen.',
+    serverErrorNoDetail:
+      'Server antwortete mit HTTP {{status}} ohne Details. Backend-Konsole prüfen.',
+    importDataEndpoint404:
+      'Datenimport-Endpunkt nicht gefunden (404). PHP-API neu starten (npm run php:api) und Seite aktualisieren.',
+    materialsBaselineOnly: 'Materialien sind nur für Basismaschinen verfügbar.',
+    routingImportFailed: 'Routing-Datei konnte nicht importiert werden.',
+    volumesLoadFailed: 'Volumen konnten nicht geladen werden.',
   },
   calculator: {
     legend: {
@@ -150,7 +166,7 @@ export const extendedDe: TranslationTree = {
       'Teilekatalog: SAP-Nr., Alias, Freitext. Im Projekt Suche nach SAP-Nr. oder Alias. Einträge hinzufügen, bearbeiten und löschen. Spalte Projekt zeigt zugehörige Projekte. Linien-Nr. sind Maschinenlinien aus Vorgängen dieses Teils.',
     addDetail: 'Teil hinzufügen',
     duplicateExistsModal:
-      'Ein Teil mit dieser Bezeichnung existiert bereits; es wurde kein weiteres angelegt.',
+      'Ein Teil mit dieser SAP-Nummer existiert bereits; es wurde kein weiteres angelegt. Alias und Freitext dürfen sich wiederholen.',
     duplicateExistsTitle: 'Teil existiert bereits',
     sapCol: 'SAP-Nr.',
     aliasCol: 'Alias',
@@ -612,7 +628,21 @@ export const extendedDe: TranslationTree = {
     schemaOldBackend:
       'Warnung: Backend bestätigt operacje-v2 nicht (404 oder alter Code). In server `npm run build`, dann `npm start` oder `npm run dev`. Gleiches API wie Frontend (proxy /api oder VITE_API_BASE).',
     dataTemplateFailed: 'Datenvorlage konnte nicht heruntergeladen werden.',
-    importConfirmRequired: 'Zum Import genau eingeben: IMPORTUJ_DANE (Groß/Klein beachten).',
+    dataFileRequired: 'Wählen Sie eine .xlsx-Datei zum Hochladen.',
+    bundleFileRequired: 'Wählen Sie eine .xlsx- oder .zip-Datei (volles Paket) zum Hochladen.',
+    dataTemplateDownloaded: 'Datenimport-Vorlage heruntergeladen (erwartete Datei: capacity_szablon_import_danych_v3.xlsx).',
+    restoreSuccess: 'Datenbank wiederhergestellt von: {{path}}. Sicherheitskopie: {{backup}}.',
+    clearConfirmDialog:
+      'Dieser Vorgang ist unwiderruflich: alle Anwendungsdaten (Maschinen, Projekte, Operationen, Szenarien usw.) werden dauerhaft gelöscht. Backup-Einstellungen bleiben. {{backupNote}} Fortfahren?',
+    clearDone: 'Datenbank geleert ({{tables}} Tabellen, {{rows}} Zeilen gelöscht).',
+    backupFileNote: 'Backup: {{file}}.',
+    bundleImportNoSummary: 'Server hat keine Import-Zusammenfassung zurückgegeben.',
+    bundlePartialDownloaded: 'Teilvorlage heruntergeladen ({{tables}}) — capacity_baza_szablon_wybrane.zip.',
+    bundleZipRestoredNote:
+      ' Call-offs-Ordner ({{files}} Dateien) und {{snapshots}} Szenario-Snapshots aus ZIP wiederhergestellt.',
+    bundleImportZipConfirmNote:
+      ' Aus dem .zip-Paket werden auch große Szenario-Snapshots und der Call-offs-Ordner (Quelldateien) wiederhergestellt.',
+    importConfirmRequired: 'Zum Import genau eingeben: IMPORT_DATA (Groß/Klein beachten).',
     importReplaceConfirm:
       'ERSETZEN: DB-Daten werden an Excel angepasst — Einträge nicht in Datei werden gelöscht. Backup vor Import. Fortfahren?',
     importAppendConfirm:
@@ -620,12 +650,12 @@ export const extendedDe: TranslationTree = {
     importDoneReplace: 'Datenimport abgeschlossen (Ersetzen aus Datei).',
     importDoneAppend: 'Datenimport abgeschlossen (Hinzufügen und Aktualisieren).',
     importFailed: 'Datenimport fehlgeschlagen.',
-    clearConfirmRequired: 'Zum Leeren genau eingeben: WYCZYSC_BAZE (Groß/Klein beachten).',
+    clearConfirmRequired: 'Zum Leeren genau eingeben: CLEAR_DATABASE (Groß/Klein beachten).',
     clearBackupAckRequired: 'Backup bestätigen oder automatisches Backup vor Leeren aktivieren.',
     clearAutoBackup: 'Automatisches DB-Backup vor dem Leeren.',
     clearNoAutoBackup: 'Kein automatisches Backup — eigenes Backup sicherstellen.',
     clearFailed: 'Datenbank konnte nicht geleert werden.',
-    bundleConfirmRequired: 'Zum Import genau eingeben: IMPORTUJ_BAZE (Groß/Klein beachten).',
+    bundleConfirmRequired: 'Zum Import genau eingeben: IMPORT_BUNDLE (Groß/Klein beachten).',
     bundlePartialRequired: 'Mindestens eine Tabelle für Teilimport wählen.',
     bundlePartialConfirm:
       'Teilimport: nur diese Tabellen werden geleert und aus Datei gefüllt: {{tables}}. Restliche SQLite-Daten bleiben. Blattnamen wie Tabellen. Backup vor Fortfahren. Fortfahren?',
@@ -650,7 +680,7 @@ export const extendedDe: TranslationTree = {
     machinesImportIntro:
       'Laden Sie eine .xlsx-Datei nur mit Maschinen hoch (Blatt „Maszyny“). Erstellt oder aktualisiert Maschinen anhand der internen Nummer. Unterstützte Spalten u. a.: sap_number, type, status, location, oee_override, machine_usage sowie Abmessungen. Vor dem Import wird ein vollständiges ZIP-Backup (DB + Call offs + Anhänge) erstellt.',
     machinesImportConfirmLabel: 'Importbestätigung (genau eingeben):',
-    machinesImportConfirmRequired: 'Zum Import der Maschinen genau eingeben: IMPORTUJ_MASZYNY (Groß-/Kleinschreibung beachten).',
+    machinesImportConfirmRequired: 'Zum Import der Maschinen genau eingeben: IMPORT_MACHINES (Groß-/Kleinschreibung beachten).',
     machinesImportConfirm:
       'Maschinendaten aus der Datei werden ergänzt oder aktualisiert (Zuordnung über interne Nummer). Vor dem Import erstellt das System ein Backup. Fortfahren?',
     machinesFileRequired: 'Wählen Sie eine .xlsx-Datei mit Maschinen.',
@@ -771,9 +801,10 @@ export const extendedDe: TranslationTree = {
     partialTableScenarios: 'Szenarien (scenarios)',
     partialTableCallOffComparisons: 'Call offs — Vergleiche (call_off_comparisons)',
     partialTableCallOffVolumes: 'Call offs — Volumina (call_off_volumes)',
-    confirmImportData: 'IMPORTUJ_DANE',
-    confirmImportBundle: 'IMPORTUJ_BAZE',
-    confirmClearDb: 'WYCZYSC_BAZE',
+    confirmImportData: 'IMPORT_DATA',
+    confirmImportBundle: 'IMPORT_BUNDLE',
+    confirmImportMachines: 'IMPORT_MACHINES',
+    confirmClearDb: 'CLEAR_DATABASE',
   },
   dataViz: {
     title: 'Datenvisualisierung',

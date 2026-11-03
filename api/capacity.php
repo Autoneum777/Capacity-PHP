@@ -779,6 +779,27 @@ function calculator_include_rfq_ids(): array
     return array_values(array_unique($ids));
 }
 
+/** Maszyny z włączonych operacji RFQ (includeRfqOperationIds), których projekt ma klienta z filtra kalkulatora. */
+function calculator_client_rfq_machine_ids(PDO $pdo, array $clientNamesUpper): array
+{
+    $rfqOpIds = calculator_include_rfq_ids();
+    if ($rfqOpIds === [] || $clientNamesUpper === []) {
+        return [];
+    }
+    $opPh = implode(',', array_fill(0, count($rfqOpIds), '?'));
+    $clientPh = implode(',', array_fill(0, count($clientNamesUpper), '?'));
+    $stmt = $pdo->prepare(
+        'SELECT DISTINCT o.machine_id
+         FROM operations o
+         JOIN projects p ON p.id = o.project_id
+         WHERE p.status = \'RFQ\'
+           AND o.id IN (' . $opPh . ')
+           AND UPPER(TRIM(p.client)) IN (' . $clientPh . ')'
+    );
+    $stmt->execute([...$rfqOpIds, ...$clientNamesUpper]);
+    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
 function calculator_rfq_operations(PDO $pdo): array
 {
     $ids = calculator_include_rfq_ids();
@@ -1069,13 +1090,18 @@ function calculator_machine_ids(PDO $pdo): ?array
         );
         $stmt->execute($names);
         $ids = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+        $rfqMachines = calculator_client_rfq_machine_ids($pdo, $names);
+        if ($rfqMachines !== []) {
+            $ids = array_values(array_unique(array_merge($ids, $rfqMachines)));
+        }
     }
     $numbers = calc_csv_list('machines');
     if ($numbers !== []) {
         $matched = [];
         $stmt = $pdo->prepare('SELECT id FROM machines WHERE internal_number = ?');
         foreach ($numbers as $number) {
-            if (preg_match('/^\d+(\/\d+)?$/', $number) !== 1) {
+            $number = trim($number);
+            if ($number === '') {
                 continue;
             }
             $stmt->execute([$number]);

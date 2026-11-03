@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useLocation } from 'react-router-dom';
 import { api } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 import { useContractVolumes } from '../context/ContractVolumesContext';
 import { confirmDelete } from '../confirmDelete';
 import SearchableSelect from '../components/SearchableSelect';
@@ -324,6 +325,12 @@ function MachineDescForm({
   navigationSearch: string;
 }) {
   const { t, te } = useI18n();
+  const { hasAnyPermission } = useAuth();
+  const canChangeStatus = hasAnyPermission(['machines.change_status', 'machines.edit']);
+  const scenarioId = useMemo(() => {
+    const n = Number(new URLSearchParams(navigationSearch).get('scenarioId'));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [navigationSearch]);
   const [editing, setEditing] = useState(false);
   const [machineCatalog, setMachineCatalog] = useState<{ id: number; name: string; default_machine_usage: number }[]>([]);
   const [editInternalNumber, setEditInternalNumber] = useState(String(machine.internal_number ?? ''));
@@ -386,11 +393,91 @@ function MachineDescForm({
     String(machine.baseline_max_blanks_across_unit ?? 'szt')
   );
   const [saving, setSaving] = useState(false);
-  const [statusGuard, setStatusGuard] = useState<null | {
-    projects: { id: number; client: string; name: string }[];
-    target: 'inactive' | 'RFQ';
-    payload: Record<string, unknown>;
-  }>(null);
+  const [savingInlineStatus, setSavingInlineStatus] = useState(false);
+  type StatusGuardState =
+    | {
+        kind: 'inline';
+        next: MachineEditStatus;
+        projects: { id: number; client: string; name: string }[];
+      }
+    | {
+        kind: 'editSelect';
+        next: MachineEditStatus;
+        projects: { id: number; client: string; name: string }[];
+      }
+    | {
+        kind: 'save';
+        target: 'inactive' | 'RFQ';
+        payload: Record<string, unknown>;
+        projects: { id: number; client: string; name: string }[];
+      };
+  const [statusGuard, setStatusGuard] = useState<StatusGuardState | null>(null);
+
+  const completeInlineStatusChange = useCallback(
+    (next: MachineEditStatus) => {
+      setSavingInlineStatus(true);
+      const write =
+        scenarioId != null
+          ? api.scenarios.patchMachineStatus(scenarioId, machine.id, { status: next })
+          : api.machines.update(machine.id, { status: next });
+      write
+        .then((updated) => {
+          if (scenarioId != null && updated && typeof updated === 'object' && 'status' in updated) {
+            onUpdate({ ...machine, status: updated.status });
+          } else if (updated && typeof updated === 'object') {
+            onUpdate({ ...machine, ...updated });
+          } else {
+            onUpdate({ ...machine, status: next });
+          }
+        })
+        .catch((err: unknown) => {
+          alert(err instanceof Error ? te(err.message) : t('common.saveError'));
+        })
+        .finally(() => setSavingInlineStatus(false));
+    },
+    [machine, onUpdate, scenarioId, t, te]
+  );
+
+  const runStatusGuardIfNeeded = useCallback(
+    async (
+      from: MachineEditStatus,
+      next: MachineEditStatus,
+      onAllowed: () => void,
+      guardKind: 'inline' | 'editSelect'
+    ): Promise<void> => {
+      if (from === next) return;
+      if (scenarioId != null || (next !== 'inactive' && next !== 'RFQ')) {
+        onAllowed();
+        return;
+      }
+      try {
+        const data = await api.machines.activeProjectOperationCount(machine.id);
+        if (data.count > 0) {
+          setStatusGuard({
+            kind: guardKind,
+            next,
+            projects: data.projects ?? [],
+          });
+          return;
+        }
+      } catch (err: unknown) {
+        alert(err instanceof Error ? te(err.message) : t('machineDetail.verifyOpsFailed'));
+        return;
+      }
+      onAllowed();
+    },
+    [machine.id, scenarioId, t, te]
+  );
+
+  const handleInlineStatusChange = (next: MachineEditStatus) => {
+    const current = machineStatusFromDb(machine.status);
+    void runStatusGuardIfNeeded(current, next, () => completeInlineStatusChange(next), 'inline');
+  };
+
+  const handleEditStatusSelect = (next: MachineEditStatus) => {
+    if (next === editStatus) return;
+    void runStatusGuardIfNeeded(editStatus, next, () => setEditStatus(next), 'editSelect');
+  };
 
   useEffect(() => {
     api.settings.machineTypes.list().then(setMachineCatalog).catch(() => setMachineCatalog([]));
@@ -480,8 +567,7 @@ function MachineDescForm({
   const isBaselineMachine = Boolean(Number(machine.is_baseline));
 
   const executeSave = (payload: Record<string, unknown>) => {
-    const scenarioId = Number(new URLSearchParams(navigationSearch).get('scenarioId'));
-    const inScenario = Number.isFinite(scenarioId) && scenarioId > 0;
+    const inScenario = scenarioId != null;
     const prodPayload = { ...payload };
     const locationWrite =
       inScenario && 'location' in prodPayload
@@ -586,15 +672,15 @@ function MachineDescForm({
     };
 
     const prevStatus = machineStatusFromDb(machine.status);
-    const inScenarioNow = Number(new URLSearchParams(navigationSearch).get('scenarioId')) > 0;
-    if (!inScenarioNow && (editStatus === 'inactive' || editStatus === 'RFQ') && editStatus !== prevStatus) {
+    if (scenarioId == null && (editStatus === 'inactive' || editStatus === 'RFQ') && editStatus !== prevStatus) {
       try {
         const data = await api.machines.activeProjectOperationCount(machine.id);
         if (data.count > 0) {
           setStatusGuard({
-            projects: data.projects ?? [],
+            kind: 'save',
             target: editStatus as 'inactive' | 'RFQ',
             payload,
+            projects: data.projects ?? [],
           });
           return;
         }
@@ -750,9 +836,23 @@ function MachineDescForm({
               <p style={{ marginBottom: 6 }}><strong>{t('machineDetail.strokeMm')}</strong> {formatDimDisplay(machine.stroke_mm)}</p>
             </>
           )}
-          <p style={{ marginBottom: 10 }}>
+          <p style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
             <strong>{t('machineDetail.statusLabel')}</strong>{' '}
-            <span style={machineStatusReadonlyStyle(machine.status)}>{machineStatusReadLabelProjectsParity(machine.status, t)}</span>
+            {canChangeStatus ? (
+              <select
+                value={machineStatusFromDb(machine.status)}
+                onChange={(e) => handleInlineStatusChange(e.target.value as MachineEditStatus)}
+                disabled={savingInlineStatus}
+                title={t('machineDetail.changeStatusTitle')}
+                style={machineStatusSelectStyle(machine.status, { saving: savingInlineStatus })}
+              >
+                <option value="active">{t('common.active')}</option>
+                <option value="inactive">{t('common.inactive')}</option>
+                <option value="RFQ">{t('common.rfq')}</option>
+              </select>
+            ) : (
+              <span style={machineStatusReadonlyStyle(machine.status)}>{machineStatusReadLabelProjectsParity(machine.status, t)}</span>
+            )}
           </p>
           <button type="button" onClick={() => setEditing(true)} style={{ padding: '0.35rem 0.75rem', background: 'var(--cap-green)', color: 'white', border: 'none', borderRadius: 4 }}>{t('commonExtra.edit')}</button>
         </>
@@ -891,7 +991,7 @@ function MachineDescForm({
             <strong>{t('machineDetail.statusLabel')}</strong>{' '}
             <select
               value={editStatus}
-              onChange={(e) => setEditStatus(e.target.value as MachineEditStatus)}
+              onChange={(e) => handleEditStatusSelect(e.target.value as MachineEditStatus)}
               title={t('machineDetail.changeStatusTitle')}
               disabled={saving}
               style={machineStatusSelectStyle(editStatus, { saving })}
@@ -916,13 +1016,21 @@ function MachineDescForm({
         machineId={machine.id}
         navigationSearch={navigationSearch}
         projects={statusGuard.projects}
-        targetStatus={statusGuard.target}
+        targetStatus={
+          statusGuard.kind === 'save'
+            ? statusGuard.target
+            : statusGuard.next === 'RFQ'
+              ? 'RFQ'
+              : 'inactive'
+        }
         onCancel={() => setStatusGuard(null)}
         onConfirm={() => {
           const g = statusGuard;
           if (!g) return;
           setStatusGuard(null);
-          executeSave(g.payload);
+          if (g.kind === 'save') executeSave(g.payload);
+          else if (g.kind === 'inline') completeInlineStatusChange(g.next);
+          else setEditStatus(g.next);
         }}
       />
     )}

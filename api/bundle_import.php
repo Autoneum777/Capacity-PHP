@@ -56,8 +56,8 @@ function bundle_import_request(PDO $pdo): void
         json_response(413, ['error' => 'Plik jest za duży dla limitu przesyłania PHP.']);
     }
     $confirm = trim((string) ($_POST['confirm'] ?? ''));
-    if ($confirm !== 'IMPORTUJ_BAZE') {
-        json_response(400, ['error' => 'Potwierdź import: wyślij pole formularza confirm o wartości dokładnie IMPORTUJ_BAZE.']);
+    if ($confirm !== 'IMPORTUJ_BAZE' && $confirm !== 'IMPORT_BUNDLE') {
+        json_response(400, ['error' => 'Confirm import: send form field confirm with exactly IMPORT_BUNDLE or IMPORTUJ_BAZE.']);
     }
     $file = $_FILES['file'] ?? null;
     if (!is_array($file) || (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -480,7 +480,7 @@ function bundle_duplicate_machines(array $rows): array
         }
         $value = bundle_coerce('internal_number', $raw['internal_number'] ?? null);
         $text = trim((string) $value);
-        if ($text === '' || preg_match('/^\d+(\/\d+)?$/', $text) !== 1) {
+        if ($text === '' || strlen($text) > 128) {
             continue;
         }
         $counts[$text] = ($counts[$text] ?? 0) + 1;

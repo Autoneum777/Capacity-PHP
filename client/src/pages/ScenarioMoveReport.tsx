@@ -71,7 +71,7 @@ function DotBranch({ children }: { children: ReactNode }) {
 
 /** Raport ruchów w oknie Raport na kalkulatorze: wszystkie maszyny zwalniane albo wszystkie detale. */
 export default function ScenarioMoveReport({ scenarioId }: { scenarioId: number }) {
-  const { t, locale } = useI18n();
+  const { t, te, locale } = useI18n();
   const [view, setView] = useState<'machine' | 'part'>('machine');
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
@@ -93,7 +93,7 @@ export default function ScenarioMoveReport({ scenarioId }: { scenarioId: number 
       .catch((e: any) => {
         if (cancelled) return;
         setReport(null);
-        setError(e?.message || t('scenarios.loadError'));
+        setError(te(e?.message) || t('scenarios.loadError'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

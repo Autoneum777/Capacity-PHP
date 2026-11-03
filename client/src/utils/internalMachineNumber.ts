@@ -1,4 +1,5 @@
-const INTERNAL_MACHINE_NUMBER_RE = /^\d+(\/\d+)?$/;
+/** Maks. długość numeru wewnętrznego maszyny (zgodnie z API). */
+export const INTERNAL_MACHINE_NUMBER_MAX_LEN = 128;
 
 export function parseInternalMachineNumber(
   raw: unknown
@@ -11,8 +12,8 @@ export function parseInternalMachineNumber(
   }
   const s = String(raw).trim();
   if (!s) return { ok: false, error: 'Podaj numer maszyny' };
-  if (!INTERNAL_MACHINE_NUMBER_RE.test(s)) {
-    return { ok: false, error: 'Numer maszyny: cyfry lub format np. 1134/1' };
+  if (s.length > INTERNAL_MACHINE_NUMBER_MAX_LEN) {
+    return { ok: false, error: `Numer maszyny: maks. ${INTERNAL_MACHINE_NUMBER_MAX_LEN} znaków` };
   }
   return { ok: true, value: s };
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../../api/client';
+import { useI18n } from '../../context/I18nContext';
 
 type RfqOp = { id: number; label: string; machine_id: number; location: string | null };
 type RfqPart = { id: number; label: string; operations: RfqOp[] };
@@ -24,6 +25,7 @@ export default function RfqFilterDropdown({
   selectedOpIds,
   onSelectedOpIdsChange,
 }: RfqFilterDropdownProps) {
+  const { t, te } = useI18n();
   const popId = useId();
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
@@ -55,9 +57,9 @@ export default function RfqFilterDropdown({
           setExpandedProjects(new Set([allProjects[0].id]));
         }
       })
-      .catch((e) => setError(String(e?.message ?? 'Błąd ładowania')))
+      .catch((e) => setError(te(String(e?.message ?? '')) || t('calculator.rfqFilter.loadError')))
       .finally(() => setLoading(false));
-  }, [open, tree]);
+  }, [open, tree, t]);
 
   const updatePos = () => {
     const el = anchorRef.current;
@@ -144,7 +146,11 @@ export default function RfqFilterDropdown({
   const totalOps = tree ? tree.flatMap((c) => c.projects).flatMap((p) => allOpsInProject(p)).length : 0;
   const selectedCount = selectedOpIds.length;
   const summaryLabel = enabled
-    ? (selectedCount === 0 ? 'Żaden' : selectedCount === totalOps ? 'Wszystkie' : `${selectedCount} op.`)
+    ? selectedCount === 0
+      ? t('calculator.rfqFilter.summaryNone')
+      : selectedCount === totalOps
+        ? t('calculator.rfqFilter.summaryAll')
+        : t('calculator.rfqFilter.summaryCount', { count: selectedCount })
     : '';
 
   return (
@@ -158,7 +164,7 @@ export default function RfqFilterDropdown({
             if (e.target.checked && !open) setOpen(true);
           }}
         />
-        <span>Detale RFQ</span>
+        <span>{t('calculator.rfqFilter.label')}</span>
       </label>
       {enabled && (
         <button
@@ -182,7 +188,7 @@ export default function RfqFilterDropdown({
             minWidth: 72,
           }}
         >
-          {summaryLabel || 'Wybierz…'}
+          {summaryLabel || t('calculator.rfqFilter.choose')}
           <span style={{ fontSize: 10 }}>{open ? '▲' : '▼'}</span>
         </button>
       )}
@@ -193,7 +199,7 @@ export default function RfqFilterDropdown({
             ref={popRef}
             id={popId}
             role="dialog"
-            aria-label="Filtr detali RFQ"
+            aria-label={t('calculator.rfqFilter.filterAria')}
             style={{
               position: 'fixed',
               top: pos.top,
@@ -211,14 +217,14 @@ export default function RfqFilterDropdown({
           >
             {/* Toolbar */}
             <div style={{ display: 'flex', gap: 8, padding: '6px 10px', borderBottom: '1px solid #e0e0e0', background: '#f5f5f5', alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 600, flex: 1 }}>Projekty RFQ</span>
-              <button type="button" onClick={selectAll} style={linkBtnStyle}>Zaznacz wszystkie</button>
-              <button type="button" onClick={selectNone} style={linkBtnStyle}>Odznacz wszystkie</button>
+              <span style={{ fontWeight: 600, flex: 1 }}>{t('calculator.rfqFilter.projectsTitle')}</span>
+              <button type="button" onClick={selectAll} style={linkBtnStyle}>{t('common.selectAll')}</button>
+              <button type="button" onClick={selectNone} style={linkBtnStyle}>{t('common.deselectAll')}</button>
             </div>
 
-            {loading && <div style={{ padding: '12px 14px', color: '#888' }}>Ładowanie…</div>}
+            {loading && <div style={{ padding: '12px 14px', color: '#888' }}>{t('calculator.rfqFilter.loading')}</div>}
             {error && <div style={{ padding: '12px 14px', color: '#c62828' }}>{error}</div>}
-            {tree && tree.length === 0 && <div style={{ padding: '12px 14px', color: '#888' }}>Brak projektów RFQ.</div>}
+            {tree && tree.length === 0 && <div style={{ padding: '12px 14px', color: '#888' }}>{t('calculator.rfqFilter.noProjects')}</div>}
 
             {tree && tree.flatMap((c) => c.projects).map((project) => {
               const projSel = isProjectAllSelected(project);
@@ -266,7 +272,7 @@ export default function RfqFilterDropdown({
                     const partExpanded = expandedParts.has(part.id);
                     const hasMultipleOps = part.operations.length > 1;
                     return (
-                      <div key={part.id} style={{ borderTop: '1px solid #f0f0f0' }}>
+                      <div key={part.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
                         {/* Part row */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px 4px 22px' }}>
                           <IndeterminateCheckbox

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/bundle_import.php';
+require_once __DIR__ . '/import_instructions.php';
 
 /*
  * "Import danych (Excel)" — samodzielna wersja (v1/operacje-v3) zaprojektowana od zera dla backendu PHP.
@@ -22,7 +23,19 @@ const DATA_IMPORT_SCHEMA_TAG = 'operacje-v3';
 const DATA_IMPORT_TEMPLATE_FILENAME = 'capacity_szablon_import_danych_v3.xlsx';
 const DATA_IMPORT_INSTRUCTION_CODE = 'CAPACITY_IMPORT_V3';
 const DATA_IMPORT_CONFIRM_PHRASE = 'IMPORTUJ_DANE';
+const DATA_IMPORT_CONFIRM_PHRASE_EN = 'IMPORT_DATA';
 const MACHINES_IMPORT_CONFIRM_PHRASE = 'IMPORTUJ_MASZYNY';
+const MACHINES_IMPORT_CONFIRM_PHRASE_EN = 'IMPORT_MACHINES';
+
+function data_import_confirm_data(string $confirm): bool
+{
+    return $confirm === DATA_IMPORT_CONFIRM_PHRASE || $confirm === DATA_IMPORT_CONFIRM_PHRASE_EN;
+}
+
+function data_import_confirm_machines(string $confirm): bool
+{
+    return $confirm === MACHINES_IMPORT_CONFIRM_PHRASE || $confirm === MACHINES_IMPORT_CONFIRM_PHRASE_EN;
+}
 const MACHINES_IMPORT_TEMPLATE_FILENAME = 'maszyny_import.xlsx';
 
 const DATA_IMPORT_MACHINES_HEADERS = ['numer_wewnetrzny', 'numer_sap', 'typ', 'status', 'lokalizacja'];
@@ -41,7 +54,8 @@ function handle_data_import(string $method, string $path, PDO $pdo): bool
     if ($method === 'GET' && $path === '/admin/capacity-data-template.xlsx') {
         require_permission($pdo, 'admin_settings.view');
         data_import_schema_header();
-        $bytes = data_import_xlsx_build(data_import_template_sheets());
+        $locale = import_request_locale();
+        $bytes = data_import_xlsx_build(data_import_template_sheets($locale));
         header_remove('Content-Type');
         header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         header('Content-Disposition: attachment; filename="' . DATA_IMPORT_TEMPLATE_FILENAME . '"');
@@ -76,12 +90,10 @@ function handle_data_import(string $method, string $path, PDO $pdo): bool
 
     if ($method === 'GET' && $path === '/admin/machines-import-template.xlsx') {
         require_permission($pdo, 'admin_settings.view');
+        $locale = import_request_locale();
         $bytes = data_import_xlsx_build([
             ['name' => 'Maszyny', 'headers' => DATA_IMPORT_MACHINES_HEADERS, 'rows' => []],
-            ['name' => BUNDLE_README_SHEET, 'headers' => ['Instrukcja'], 'rows' => [
-                ['Arkusz Maszyny: numer_wewnetrzny (wymagany, unikalny, cyfry lub np. 1134/1), numer_sap (wymagany), typ (wymagany), status (active/inactive/RFQ), lokalizacja (numer linii).'],
-                ['Import tylko dodaje/aktualizuje — nic nie jest usuwane. Potwierdzenie: ' . MACHINES_IMPORT_CONFIRM_PHRASE . '.'],
-            ]],
+            ['name' => BUNDLE_README_SHEET, 'headers' => [import_readme_header($locale)], 'rows' => machines_import_instruction_rows($locale)],
         ]);
         header_remove('Content-Type');
         header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -108,7 +120,7 @@ function data_import_schema_header(): void
     header('X-Capacity-Data-Import-Schema: ' . DATA_IMPORT_SCHEMA_TAG);
 }
 
-function data_import_template_sheets(): array
+function data_import_template_sheets(string $locale = 'en'): array
 {
     return [
         ['name' => 'Maszyny', 'headers' => DATA_IMPORT_MACHINES_HEADERS, 'rows' => []],
@@ -117,26 +129,7 @@ function data_import_template_sheets(): array
         ['name' => 'Detale', 'headers' => DATA_IMPORT_DESIGNATIONS_HEADERS, 'rows' => []],
         ['name' => 'Czesci', 'headers' => DATA_IMPORT_PARTS_HEADERS, 'rows' => []],
         ['name' => 'Operacje', 'headers' => DATA_IMPORT_OPERATIONS_HEADERS, 'rows' => []],
-        ['name' => BUNDLE_README_SHEET, 'headers' => ['Instrukcja'], 'rows' => data_import_instruction_rows()],
-    ];
-}
-
-function data_import_instruction_rows(): array
-{
-    return [
-        [DATA_IMPORT_INSTRUCTION_CODE],
-        [DATA_IMPORT_TEMPLATE_FILENAME],
-        [''],
-        ['Maszyny: numer_wewnetrzny (wymagany, unikalny — klucz dopasowania), numer_sap (wymagany), typ (wymagany), status (active/inactive/RFQ), lokalizacja (numer linii).'],
-        ['Fazy_procesu: nazwa. Opcjonalny arkusz — brakujące fazy użyte w Operacje są tworzone automatycznie.'],
-        ['Projekty: klient i nazwa_projektu (wymagane, razem są kluczem dopasowania), sop i eop (dd.mm.rrrr — wymagane dla nowego projektu), status (active/inactive/RFQ).'],
-        ['Detale: oznaczenie — katalog do podpowiedzi. Opcjonalny arkusz — brakujące oznaczenia użyte w Czesci/Operacje są tworzone automatycznie.'],
-        ['Czesci: klient, nazwa_projektu, oznaczenie (wymagane), strona (RH/LH, opcjonalnie). Łączy detal z projektem.'],
-        ['Operacje: klient, nazwa_projektu, oznaczenie, strona (jak w Czesci, opcjonalnie), numer_wewnetrzny_maszyny (musi już istnieć), faza, czas_cyklu_s, wolumen, jednostka_wolumenu (annual/monthly/weekly), gniazda, oee_override, procent_obciazenia, opf (0/1), sap, opis.'],
-        [''],
-        ['Tryb DODAJ: rekordy z pliku są tworzone/aktualizowane; reszta zostaje bez zmian.'],
-        ['Tryb ZASTĄP: dotyczy wyłącznie arkusza Operacje — po imporcie lista operacji odpowiada plikowi (operacje spoza pliku są usuwane). Maszyny, projekty, fazy i detale NIE są usuwane w żadnym trybie.'],
-        ['Przed trybem ZASTĄP system próbuje utworzyć kopię zapasową bazy (best-effort — jeśli katalog backups nie ma uprawnień do zapisu, import mimo to przebiega, z ostrzeżeniem).'],
+        ['name' => BUNDLE_README_SHEET, 'headers' => [import_readme_header($locale)], 'rows' => data_import_instruction_rows($locale)],
     ];
 }
 
@@ -331,8 +324,8 @@ function data_import_run_request(PDO $pdo): void
         json_response(413, ['error' => 'Plik jest za duży dla limitu przesyłania PHP.']);
     }
     $confirm = data_import_str($_POST['confirm'] ?? null);
-    if ($confirm !== DATA_IMPORT_CONFIRM_PHRASE) {
-        json_response(400, ['error' => 'Potwierdź import: wyślij pole formularza confirm o wartości dokładnie ' . DATA_IMPORT_CONFIRM_PHRASE . '.']);
+    if (!data_import_confirm_data($confirm)) {
+        json_response(400, ['error' => 'Confirm import: send form field confirm with exactly ' . DATA_IMPORT_CONFIRM_PHRASE_EN . ' or ' . DATA_IMPORT_CONFIRM_PHRASE . '.']);
     }
     $mode = data_import_str($_POST['mode'] ?? 'merge') === 'replace' ? 'replace' : 'merge';
     $file = $_FILES['file'] ?? null;
@@ -657,8 +650,8 @@ function data_import_upsert_machine(
         $warnings[] = "Maszyny, wiersz {$rowNum}: pominięto — wymagane numer_wewnetrzny, numer_sap i typ.";
         return;
     }
-    if (preg_match('/^\d+(\/\d+)?$/', $internal) !== 1) {
-        $warnings[] = "Maszyny, wiersz {$rowNum}: nieprawidłowy numer_wewnetrzny „{$internal}” — pominięto.";
+    if (strlen($internal) > 128) {
+        $warnings[] = "Maszyny, wiersz {$rowNum}: numer_wewnetrzny za długi (maks. 128 znaków) — pominięto.";
         return;
     }
     $statusRaw = strtolower(data_import_str($row['status'] ?? 'active'));
@@ -796,8 +789,8 @@ function machines_import_run_request(PDO $pdo): void
         json_response(413, ['error' => 'Plik jest za duży dla limitu przesyłania PHP.']);
     }
     $confirm = data_import_str($_POST['confirm'] ?? null);
-    if ($confirm !== MACHINES_IMPORT_CONFIRM_PHRASE) {
-        json_response(400, ['error' => 'Potwierdź import: wyślij pole formularza confirm o wartości dokładnie ' . MACHINES_IMPORT_CONFIRM_PHRASE . '.']);
+    if (!data_import_confirm_machines($confirm)) {
+        json_response(400, ['error' => 'Confirm import: send form field confirm with exactly ' . MACHINES_IMPORT_CONFIRM_PHRASE_EN . ' or ' . MACHINES_IMPORT_CONFIRM_PHRASE . '.']);
     }
     $file = $_FILES['file'] ?? null;
     if (!is_array($file) || (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {

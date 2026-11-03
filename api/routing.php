@@ -6,6 +6,8 @@ require_once __DIR__ . '/baseline.php';
 function routing_norm_sap(string $value): string
 {
     $text = trim($value);
+    $text = preg_replace('/\s*\(\d+\)\s*$/', '', $text) ?? $text;
+    $text = trim($text);
     $text = preg_replace('/\s+/', '', $text) ?? $text;
     return preg_replace('/\.0+$/', '', $text) ?? $text;
 }

@@ -49,6 +49,22 @@ export const extendedPl: TranslationTree = {
     yearsVolumeZero: '{{detail}}',
     operationMissingYears: '{{detail}}',
     yearVolumeTooLargeShort: '{{detail}}',
+    targetMachineNotFound: 'Nie znaleziono maszyny docelowej.',
+    targetMachineInactive: 'Maszyna docelowa jest nieaktywna. Wolumen można przenieść tylko na maszynę aktywną lub RFQ.',
+    selectDifferentMachine: 'Wybierz inną maszynę.',
+    noCapacityData: 'Brak danych capacity (ustawienia roku lub maszyna).',
+    volumeZeroAssignOnlyZero: 'Dla roku bez wolumenu można przypisać detal tylko z przeniesieniem 0.',
+    allocationSaveFailed: 'Nie udało się zapisać alokacji.',
+    operationNotOnMachineYear: 'Operacja nie należy do tej maszyny lub brak w danym roku.',
+    noMoveToUndo: 'Brak ruchu do cofnięcia.',
+    fileTooLarge: 'Plik jest za duży dla tego importu — zmniejsz plik i spróbuj ponownie.',
+    serverErrorNoDetail:
+      'Serwer zwrócił błąd HTTP {{status}} bez opisu. Sprawdź konsolę backendu (npm run php:api).',
+    importDataEndpoint404:
+      'Endpoint importu danych nie został znaleziony (404). Zrestartuj API (npm run php:api) i odśwież stronę.',
+    materialsBaselineOnly: 'Materiały są dostępne tylko dla maszyny bazowej.',
+    routingImportFailed: 'Nie udało się zaimportować pliku routing.',
+    volumesLoadFailed: 'Błąd ładowania wolumenów.',
   },
   calculator: {
     legend: {
@@ -151,7 +167,7 @@ export const extendedPl: TranslationTree = {
       'Katalog detali: Nr SAP, Alias, Free text. Przy wyborze w projekcie można szukać po Nr SAP lub Alias. Możesz dodawać, edytować i usuwać wpisy. Kolumna „Projekt” pokazuje projekty z tym detalem. Kolumna „Nr linii” to numery linii maszyn z operacji tego detalu.',
     addDetail: 'Dodaj detal',
     duplicateExistsModal:
-      'Detal o takim oznaczeniu już istnieje i nie został utworzony kolejny.',
+      'Detal o takim numerze SAP już istnieje i nie został utworzony kolejny. Alias i free text mogą się powtarzać.',
     duplicateExistsTitle: 'Detal już istnieje',
     sapCol: 'Nr SAP',
     aliasCol: 'Alias',
@@ -614,6 +630,20 @@ export const extendedPl: TranslationTree = {
     schemaOldBackend:
       'Uwaga: backend nie potwierdza operacje-v2 (404 lub stary kod). W katalogu server uruchom `npm run build`, potem `npm start`, albo `npm run dev`. Upewnij się, że frontend trafia na ten sam API co przeglądasz (proxy /api lub poprawne VITE_API_BASE).',
     dataTemplateFailed: 'Nie udało się pobrać szablonu danych.',
+    dataFileRequired: 'Wybierz plik .xlsx do wgrania.',
+    bundleFileRequired: 'Wybierz plik .xlsx lub .zip (pełna paczka) do wgrania.',
+    dataTemplateDownloaded: 'Pobrano szablon importu danych (oczekiwana nazwa pliku: capacity_szablon_import_danych_v3.xlsx).',
+    restoreSuccess: 'Przywrócono bazę z: {{path}}. Kopia bezpieczeństwa: {{backup}}.',
+    clearConfirmDialog:
+      'Operacja jest nieodwracalna: wszystkie dane aplikacji (maszyny, projekty, operacje, scenariusze itd.) zostaną trwale usunięte. Ustawienia backupu w administracji pozostaną. {{backupNote}} Kontynuować?',
+    clearDone: 'Baza wyczyszczona ({{tables}} tabel, usunięto {{rows}} wierszy).',
+    backupFileNote: 'Kopia zapasowa: {{file}}.',
+    bundleImportNoSummary: 'Serwer nie zwrócił podsumowania importu.',
+    bundlePartialDownloaded: 'Pobrano częściowy szablon ({{tables}}) — plik capacity_baza_szablon_wybrane.zip.',
+    bundleZipRestoredNote:
+      ' Odtworzono katalog call-offs ({{files}} plików) i {{snapshots}} snapshotów scenariuszy z paczki ZIP.',
+    bundleImportZipConfirmNote:
+      ' Z paczki .zip zostaną też odtworzone duże snapshoty scenariuszy oraz katalog call-offs (pliki źródłowe).',
     importConfirmRequired: 'Aby zaimportować dane, wpisz dokładnie: IMPORTUJ_DANE (wielkość liter ma znaczenie).',
     importReplaceConfirm:
       'Tryb ZASTĄP: dane wejściowe w bazie zostaną dopasowane do pliku Excel — rekordy spoza pliku (maszyny, projekty, operacje itd.) zostaną usunięte. Przed importem system utworzy kopię zapasową. Kontynuować?',
@@ -776,6 +806,7 @@ export const extendedPl: TranslationTree = {
     partialTableCallOffVolumes: 'Call offs — wolumeny (call_off_volumes)',
     confirmImportData: 'IMPORTUJ_DANE',
     confirmImportBundle: 'IMPORTUJ_BAZE',
+    confirmImportMachines: 'IMPORTUJ_MASZYNY',
     confirmClearDb: 'WYCZYSC_BAZE',
   },
   dataViz: {

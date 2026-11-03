@@ -12,6 +12,7 @@ import StatusMultiFilter, { type ProjectStatusFilterValue } from '../components/
 import { joinCsvFilter } from '../utils/filterParams';
 import { machineStatusFromDb, machineStatusReadonlyStyle } from '../utils/machineStatusStyle';
 import { formatDetailSapAliasLabel } from '../utils/detailLabel';
+import { isDesignationDuplicateError } from '../utils/designationDuplicate';
 import { useReferenceDisplay } from '../context/ReferenceDisplayContext';
 import { useI18n } from '../context/I18nContext';
 import { useAuth } from '../context/AuthContext';
@@ -232,7 +233,11 @@ export default function Projects() {
             const des = await api.settings.designations.create({ sap_number: p.sap_number, alias: p.alias, free_text: p.free_text });
             await api.projects.addPart(created.id, { designation_id: des.id });
           }
-        } catch (_) {}
+        } catch (e: any) {
+          if (isDesignationDuplicateError(e?.message)) {
+            window.alert(t('designations.duplicateExistsModal'));
+          }
+        }
       }
       setPartsToAdd([]);
       load();
